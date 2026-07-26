@@ -1,0 +1,36 @@
+configuration:
+  dymo_label:
+    name: "DYMO — geladen label"
+    description: >-
+      Welke rol er nú in je DYMO LabelWriter zit, op DYMO-artikelnummer
+      (staat op het doosje). Nieuwe labels gekocht? Rol wisselen, hier
+      kiezen, add-on herstarten — klaar. "auto" laat de LabelWriter
+      550-serie zijn eigen rol herkennen; "custom" gebruikt de eigen maat
+      hieronder.
+  dymo_custom_media:
+    name: "DYMO — eigen labelmaat"
+    description: >-
+      Alleen gebruikt als het DYMO-label op "custom" staat: breedte x hoogte
+      in mm (bv. 54x101) of een CUPS-medianaam (bv. w154h286).
+  zebra_label:
+    name: "Zebra — geladen label"
+    description: >-
+      Welke labels er in je Zebra zitten, op maat. 104x159 mm is het gangbare
+      verzendlabel (PostNL; DYMO S0904980-rollen passen ook). Na het wisselen:
+      add-on herstarten en de feed-knop van de printer ingedrukt houden tot
+      hij één keer knippert om de gap-sensor te kalibreren.
+  zebra_custom_size:
+    name: "Zebra — eigen labelmaat"
+    description: >-
+      Alleen gebruikt als het Zebra-label op "custom" staat: breedte x hoogte
+      in mm, bv. 100x150.
+  printer_model:
+    name: "DYMO-model (geavanceerd)"
+    description: >-
+      Laat op "auto" staan — het model wordt via USB herkend. Alleen forceren
+      als de detectie de verkeerde driver kiest.
+  log_level:
+    name: "Logniveau"
+    description: "Hoe praterig het add-on-log is. \"info\" is prima voor dagelijks gebruik."
+network:
+  8000/tcp: "HTTP print-API (GET /printers, POST /print met PNG/PDF/ZPL)"

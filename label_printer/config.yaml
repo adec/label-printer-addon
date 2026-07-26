@@ -1,0 +1,49 @@
+# Home Assistant add-on: Label Printer
+#
+# A generic label print service: it accepts a finished PNG/PDF — or raw printer
+# language such as ZPL — over HTTP and prints it on a USB label printer via
+# CUPS. It renders nothing itself, so anything that can produce a label can use
+# it: the Fridge Assistant integration, Label Assistant, or an external webshop.
+#
+# Philosophy: plugged in + recognized = available. There are no per-printer
+# on/off switches; every supported printer found on USB gets its own CUPS
+# queue. The ONLY thing to configure is which label roll is loaded per
+# printer — that mirrors the physical roll, so it lives here (and only here).
+name: "Label Printer"
+version: "0.4.0"
+slug: "label_printer"
+description: >-
+  Print PNG/PDF labels and raw ZPL on USB label printers. Auto-detects DYMO
+  LabelWriter and Zebra printers side by side, exposes an HTTP API, and lets
+  you pick the loaded label roll by DYMO part number or Zebra size.
+url: "https://github.com/MaxGramser/label-printer-addon"
+arch:
+  - aarch64
+  - amd64
+  - armv7
+  - armhf
+startup: application
+boot: manual
+init: false
+usb: true
+full_access: true
+devices:
+  - /dev/bus/usb
+ports:
+  8000/tcp: 8000
+ports_description:
+  8000/tcp: "HTTP print API (GET /printers, POST /print with PNG/PDF/ZPL)"
+map:
+  - share:rw
+options:
+  dymo_label: "99014 (54 x 101 mm)"
+  zebra_label: "104x159 mm (PostNL / S0904980)"
+  printer_model: "auto"
+  log_level: "info"
+schema:
+  dymo_label: "list(auto|99010 (28 x 89 mm)|99012 (36 x 89 mm)|99014 (54 x 101 mm)|99015 (54 x 70 mm)|11352 (25 x 54 mm)|11354 (57 x 32 mm)|99019 (59 x 102 mm)|904980 (104 x 159 mm)|custom)"
+  dymo_custom_media: "str?"
+  zebra_label: "list(104x159 mm (PostNL / S0904980)|102x152 mm (4x6 inch)|102x102 mm|100x50 mm|76x51 mm|57x32 mm|50x25 mm|custom)"
+  zebra_custom_size: "str?"
+  printer_model: "list(auto|lw550|lw550t|lw5xl|lw450|lw450t|lw450tt|lw400|lw330)"
+  log_level: "list(debug|info|warning|error)"

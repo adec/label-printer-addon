@@ -1,0 +1,35 @@
+configuration:
+  dymo_label:
+    name: "DYMO — label loaded"
+    description: >-
+      Which roll is in your DYMO LabelWriter right now, by DYMO part number
+      (it's printed on the label box). Bought new labels? Swap the roll,
+      pick them here, restart the add-on — done. "auto" lets the LabelWriter
+      550 family detect its own roll; "custom" uses the custom size below.
+  dymo_custom_media:
+    name: "DYMO — custom label size"
+    description: >-
+      Only used when the DYMO label is set to "custom": width x height in mm
+      (e.g. 54x101) or a CUPS media name (e.g. w154h286).
+  zebra_label:
+    name: "Zebra — label loaded"
+    description: >-
+      Which labels are in your Zebra, by size. 104x159 mm is the common
+      shipping label (PostNL, DYMO S0904980 rolls fit too). After changing
+      labels: restart the add-on and hold the printer's feed button until it
+      flashes once to recalibrate the gap sensor.
+  zebra_custom_size:
+    name: "Zebra — custom label size"
+    description: >-
+      Only used when the Zebra label is set to "custom": width x height in mm,
+      e.g. 100x150.
+  printer_model:
+    name: "DYMO model (advanced)"
+    description: >-
+      Leave on "auto" — the model is detected from USB. Only force a model
+      here if detection picks the wrong driver.
+  log_level:
+    name: "Log level"
+    description: "How chatty the add-on log is. \"info\" is fine for daily use."
+network:
+  8000/tcp: "HTTP print API (GET /printers, POST /print with PNG/PDF/ZPL)"
