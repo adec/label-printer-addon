@@ -104,8 +104,9 @@ ready`.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/printers` | Which printers exist: per printer its queue name, kind, model, connection state, **loaded label** (`loaded`, with `native_px` render size), **supported media** (`supported[]`, read from the driver), accepted formats and dpi. Includes `api_version`. |
+| `GET` | `/printers` | Which printers exist: per printer its queue name, kind, model, connection state, **loaded label** (`loaded`, with `native_px` render size), **supported media** (`supported[]`, read from the driver), accepted formats and dpi. Every media entry also carries **`printable`** — `margin_mm` (unreachable strips at the leading/trailing/left/right edges) and `rect_px` (the reachable rectangle inside `native_px`). Includes `api_version`. |
 | `GET` | `/health` | JSON status (printers connected? default media). |
+| `GET` | `/journal` | The last 100 print jobs, newest first, each with a human-readable `summary` of what was done (passed through 1:1, scaled n%, cropped, rejected, failed — and why). Also shown as a table on the web UI. `?limit=N` caps the result. |
 | `POST` | `/print` | Print. Multipart `file`, JSON `{image_base64\|zpl, printer, media, copies}`, or a raw body. Omit `printer` for the default queue; omit `media` to use the loaded label. |
 | `POST` | `/selftest?printer=…` | Print a small built-in test label. |
 | `GET` | `/` | Human-readable status page with examples. |
@@ -129,6 +130,20 @@ curl -H 'Content-Type: application/json' \
 `GET /printers`, render exactly `loaded.native_px` pixels (portrait), and POST
 without a `media` field. That is how Fridge Assistant and Label Assistant
 print pixel-perfect labels on whatever roll is loaded.
+
+**Printable area:** the canvas is the full physical sticker, but the head
+cannot reach all of it — DYMO LabelWriters park the label with its leading
+edge past the print head (first ~5.4 mm dead, ~1-1.5 mm side tolerance, from
+DYMO's own PPD `ImageableArea` per part number); Zebra desktop printers
+backfeed, leaving only ~1 mm wander margin. Keep everything you care about
+inside `printable.rect_px` (pixel coordinates on the `native_px` canvas,
+`y = 0` is the leading edge). Full-bleed backgrounds may extend to the
+canvas edge — whatever falls outside simply stays white on the sticker.
+
+Registration is automatic: at print time the add-on drops exactly the
+label's leading margin from the raster (the strip that already passed the
+head), so pixel `y` lands at physical `y` with nothing to calibrate. Zebra
+jobs are never shifted.
 
 **Add-on hostname:** from another add-on or integration the API is reachable
 at `http://<addon-hostname>:8000`. For this repository that hostname looks

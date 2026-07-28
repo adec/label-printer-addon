@@ -11,6 +11,20 @@ configuration:
     description: >-
       Only used when the DYMO label is set to "custom": width x height in mm
       (e.g. 54x101) or a CUPS media name (e.g. w154h286).
+  dymo_size_mismatch:
+    name: "DYMO — when the image size doesn't match"
+    description: >-
+      What happens when a PNG/PDF/JPG isn't exactly the loaded label size.
+      "scale" fits it onto the label (aspect kept, never cropped). "crop"
+      prints 1:1 — one image pixel is one printer dot, overhang falls off —
+      for art where the size must never change (barcodes). "reject" refuses
+      the job with an error so the sender notices. Raw ZPL is never affected.
+  dymo_crop_align:
+    name: "DYMO — crop alignment"
+    description: >-
+      Only used with "crop": where the art sits on the label. "center" crops
+      or pads evenly on all sides; "leading-edge" pins it to the corner where
+      printing starts, so overhang falls off at the far end only.
   zebra_label:
     name: "Zebra — label loaded"
     description: >-
@@ -23,6 +37,20 @@ configuration:
     description: >-
       Only used when the Zebra label is set to "custom": width x height in mm,
       e.g. 100x150.
+  zebra_size_mismatch:
+    name: "Zebra — when the image size doesn't match"
+    description: >-
+      What happens when a PNG/PDF/JPG isn't exactly the loaded label size.
+      "scale" fits it onto the label (aspect kept, never cropped). "crop"
+      prints 1:1 — one image pixel is one printer dot, overhang falls off —
+      for art where the size must never change (barcodes). "reject" refuses
+      the job with an error so the sender notices. Raw ZPL is never affected.
+  zebra_crop_align:
+    name: "Zebra — crop alignment"
+    description: >-
+      Only used with "crop": where the art sits on the label. "center" crops
+      or pads evenly on all sides; "leading-edge" pins it to the corner where
+      printing starts, so overhang falls off at the far end only.
   printer_model:
     name: "DYMO model (advanced)"
     description: >-

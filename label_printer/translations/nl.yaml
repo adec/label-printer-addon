@@ -12,6 +12,22 @@ configuration:
     description: >-
       Alleen gebruikt als het DYMO-label op "custom" staat: breedte x hoogte
       in mm (bv. 54x101) of een CUPS-medianaam (bv. w154h286).
+  dymo_size_mismatch:
+    name: "DYMO — als de afbeeldingsmaat niet klopt"
+    description: >-
+      Wat er gebeurt als een PNG/PDF/JPG niet exact de maat van het geladen
+      label heeft. "scale" maakt hem passend (verhouding blijft, nooit
+      afgesneden). "crop" print 1:1 — één beeldpixel is één printerdot, wat
+      overhangt valt eraf — voor labels waar de maat nooit mag veranderen
+      (barcodes). "reject" weigert de job met een foutmelding, zodat de
+      verzender het merkt. Rauwe ZPL wordt hier nooit door geraakt.
+  dymo_crop_align:
+    name: "DYMO — crop-uitlijning"
+    description: >-
+      Alleen gebruikt bij "crop": waar het ontwerp op het label komt.
+      "center" cropt of vult gelijkmatig aan alle kanten aan; "leading-edge"
+      zet het vast in de hoek waar het printen begint, zodat overhang alleen
+      aan het einde afvalt.
   zebra_label:
     name: "Zebra — geladen label"
     description: >-
@@ -24,6 +40,22 @@ configuration:
     description: >-
       Alleen gebruikt als het Zebra-label op "custom" staat: breedte x hoogte
       in mm, bv. 100x150.
+  zebra_size_mismatch:
+    name: "Zebra — als de afbeeldingsmaat niet klopt"
+    description: >-
+      Wat er gebeurt als een PNG/PDF/JPG niet exact de maat van het geladen
+      label heeft. "scale" maakt hem passend (verhouding blijft, nooit
+      afgesneden). "crop" print 1:1 — één beeldpixel is één printerdot, wat
+      overhangt valt eraf — voor labels waar de maat nooit mag veranderen
+      (barcodes). "reject" weigert de job met een foutmelding, zodat de
+      verzender het merkt. Rauwe ZPL wordt hier nooit door geraakt.
+  zebra_crop_align:
+    name: "Zebra — crop-uitlijning"
+    description: >-
+      Alleen gebruikt bij "crop": waar het ontwerp op het label komt.
+      "center" cropt of vult gelijkmatig aan alle kanten aan; "leading-edge"
+      zet het vast in de hoek waar het printen begint, zodat overhang alleen
+      aan het einde afvalt.
   printer_model:
     name: "DYMO-model (geavanceerd)"
     description: >-
