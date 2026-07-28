@@ -56,6 +56,10 @@ except ValueError:
 RAW_FORMATS = ("zpl", "epl", "raw")
 MAX_COPIES = 20
 
+# Zebra Technologies USB vendor id (all ZD/GK/GX models), for the direct
+# ~HS status query that CUPS cannot do for us.
+ZEBRA_VID = 0x0A5F
+
 # Print-head resolution per hardware family. Rendering clients use this (via
 # GET /printers) to produce pixel-perfect art instead of relying on scaling.
 DPI_BY_KIND = {"dymo": 300, "zebra": 203}
@@ -414,8 +418,323 @@ def _printer_list() -> list[dict]:
     return [_printer_entry(n, default) for n in _queues()]
 
 
+# --------------------------------------------------------------------------
+# Zebra host status (~HS) — the only way to know a Zebra is out of labels
+# --------------------------------------------------------------------------
+# A Zebra swallows raw ZPL into its own buffer, so CUPS always reports
+# success. ~HS makes the printer answer three comma-separated strings; in the
+# first one field 2 is "paper out" and field 3 is "pause" (ZPL II manual).
+# Reading the reply means talking to the device outside CUPS: the kernel's
+# usblp node when it exists, else libusb via ctypes (no extra packages).
+_ZEBRA_HS_TTL = 4.0
+_hs_cache: dict[str, tuple[float, dict]] = {}
+
+
+def _usb_lp_nodes() -> list[str]:
+    try:
+        return sorted(f"/dev/usb/{n}" for n in os.listdir("/dev/usb")
+                      if n.startswith("lp"))
+    except OSError:
+        return []
+
+
+def _parse_hs(reply: str) -> dict:
+    """Decode a ~HS reply into the flags we care about."""
+    lines = [ln.strip("\x02\x03\r\n ") for ln in reply.splitlines() if ln.strip()]
+    if not lines:
+        return {}
+    fields = lines[0].split(",")
+    if len(fields) < 5:
+        return {}
+    # String 1 is aaa,b,c,dddd,eee,...: b = paper out, c = pause, eee = the
+    # number of formats sitting in the receive buffer. Both c and eee were
+    # confirmed against this ZD220 on 2026-07-28: pulling the roll flipped c
+    # to 1 (the printer pauses instead of raising paper-out), and each print
+    # sent while empty incremented eee — those buffered labels do not exist
+    # on paper yet.
+    try:
+        buffered = int(fields[4].strip() or 0)
+    except ValueError:
+        buffered = 0
+    return {
+        "paper_out": fields[1].strip() == "1",
+        "paused": fields[2].strip() == "1",
+        "buffered": buffered,
+        "raw": " | ".join(lines)[:200],
+    }
+
+
+def _zebra_hs_via_node(path: str) -> dict:
+    """Write ~HS to a usblp node and read the reply."""
+    fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+    try:
+        os.write(fd, b"~HS\n")
+        import select
+        import time as _time
+        deadline = _time.time() + 1.5
+        buf = b""
+        while _time.time() < deadline and buf.count(b"\n") < 3:
+            r, _, _ = select.select([fd], [], [], 0.2)
+            if not r:
+                continue
+            try:
+                chunk = os.read(fd, 512)
+            except BlockingIOError:
+                continue
+            if not chunk:
+                break
+            buf += chunk
+        return _parse_hs(buf.decode("ascii", errors="replace"))
+    finally:
+        os.close(fd)
+
+
+def _zebra_host_status(printer: str) -> dict:
+    """Ask a Zebra how it's doing; {} when we can't reach it."""
+    import time as _time
+    cached = _hs_cache.get(printer)
+    now = _time.monotonic()
+    if cached and now - cached[0] < _ZEBRA_HS_TTL:
+        return cached[1]
+    result: dict = {}
+    for node in _usb_lp_nodes():
+        try:
+            result = _zebra_hs_via_node(node)
+        except OSError:
+            continue
+        if result:
+            result["via"] = node
+            break
+    if not result:
+        result = _zebra_hs_via_libusb()
+    _hs_cache[printer] = (now, result)
+    return result
+
+
+def _zebra_hs_via_libusb() -> dict:
+    """~HS over pyusb, for when no usblp node exists.
+
+    CUPS' usb backend only holds the device while a job runs, so between
+    jobs the interface is free to claim. (A hand-rolled ctypes binding was
+    tried first and segfaulted the service — pointer args need full argtype
+    declarations; pyusb does that properly.)
+    """
+    try:
+        import usb.core
+        import usb.util
+    except ImportError:
+        return {"error": "pyusb_missing"}
+    try:
+        dev = usb.core.find(idVendor=ZEBRA_VID)
+        if dev is None:
+            return {"error": "no_zebra_on_usb"}
+        try:
+            if dev.is_kernel_driver_active(0):
+                dev.detach_kernel_driver(0)
+        except (NotImplementedError, usb.core.USBError):
+            pass
+        cfg = dev.get_active_configuration()
+        intf = cfg[(0, 0)]
+        ep_out = usb.util.find_descriptor(
+            intf, custom_match=lambda e:
+            usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_OUT)
+        ep_in = usb.util.find_descriptor(
+            intf, custom_match=lambda e:
+            usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN)
+        if ep_out is None or ep_in is None:
+            return {"error": "no_bulk_endpoints"}
+        ep_out.write(b"~HS\n", timeout=1000)
+        chunks = []
+        for _ in range(3):
+            try:
+                chunks.append(bytes(ep_in.read(512, timeout=1200)))
+            except usb.core.USBError:
+                break
+        usb.util.dispose_resources(dev)
+        parsed = _parse_hs(b"".join(chunks).decode("ascii", errors="replace"))
+        if parsed:
+            parsed["via"] = "pyusb"
+            return parsed
+        return {"error": "no_reply"}
+    except Exception as err:  # noqa: BLE001 - status must never break printing
+        return {"error": f"{type(err).__name__}: {err}"[:120]}
+
+
+# --------------------------------------------------------------------------
+# Attention: out of labels, jammed, stuck job
+# --------------------------------------------------------------------------
+# Measured on the real hardware (2026-07-28), because the two families fail
+# very differently:
+#   DYMO LW400  — CUPS keeps the job queued and the queue reports
+#                 "com.dymo.out-of-paper-error"; reloading the roll prints it.
+#   Zebra ZD220 — raw ZPL goes into the printer's own buffer, so CUPS marks
+#                 the job COMPLETE and reports nothing at all; the label only
+#                 appears after a roll + a FEED press. Only the printer itself
+#                 knows, via a ~HS status query (see _zebra_host_status).
+# Anything here is worth telling the user about: a label they think they
+# printed does not exist yet.
+ALERT_WORDS = ("out-of-paper", "media-empty", "media-needed", "media-jam",
+               "cover-open", "door-open", "out-of-ink", "offline",
+               "media-low", "marker-supply-empty")
+
+# A job older than this while the queue is not actively printing means it is
+# waiting for something physical (labels, a jam), not just busy.
+STUCK_JOB_SECONDS = 25
+
+
+def _queue_alerts(name: str) -> list[str]:
+    """Alert/state-reason words CUPS reports for a queue."""
+    text = _out(_run(["lpstat", "-l", "-p", name]))
+    found = []
+    for line in text.splitlines():
+        low = line.lower()
+        if "alerts:" not in low:
+            continue
+        value = line.split(":", 1)[1].strip()
+        if not value or value.lower() in ("none", "job-printing"):
+            continue
+        for word in ALERT_WORDS:
+            if word in value.lower() and value not in found:
+                found.append(value)
+    return found
+
+
+def _pending_jobs() -> dict[str, dict]:
+    """Per printer: how many jobs wait and how old the oldest one is."""
+    import datetime
+    import time as _time
+    out: dict[str, dict] = {}
+    now = _time.time()
+    for line in _out(_run(["lpstat", "-o"])).splitlines():
+        parts = line.split()
+        if len(parts) < 4 or "-" not in parts[0]:
+            continue
+        queue = parts[0].rsplit("-", 1)[0]
+        # "dymo-3 root 27648 Tue Jul 28 11:11:49 2026"
+        stamp = " ".join(parts[3:])
+        age = None
+        for fmt in ("%a %d %b %Y %I:%M:%S %p %Z", "%a %b %d %H:%M:%S %Y"):
+            try:
+                age = int(now - datetime.datetime.strptime(stamp, fmt).timestamp())
+                break
+            except (ValueError, TypeError):
+                continue
+        if age is None:
+            age = STUCK_JOB_SECONDS + 1  # unparsable = assume it's waiting
+        entry = out.setdefault(queue, {"count": 0, "age": 0})
+        entry["count"] += 1
+        entry["age"] = max(entry["age"], age)
+    return out
+
+
+# How a printer is named to a human, and what CUPS jargon actually means.
+# A notification must say what happened AND what to do — "com.dymo.
+# out-of-paper-error" helps nobody at the fridge with a label in hand.
+_KIND_LABEL = {"dymo": "DYMO", "zebra": "Zebra"}
+_ALERT_MEANING = (
+    (("out-of-paper", "media-empty", "media-needed", "marker-supply-empty"),
+     "media_out", "Labels op in de {p}."),
+    (("media-jam",), "media_jam", "Er zit een label vast in de {p}."),
+    (("cover-open", "door-open"), "cover_open", "De klep van de {p} staat open."),
+    (("media-low",), "media_low", "De {p} heeft bijna geen labels meer."),
+    (("offline",), "offline", "De {p} is offline."),
+)
+
+
+def _printer_label(name: str) -> str:
+    kind = _configured(name).get("kind") or name
+    return _KIND_LABEL.get(kind, name)
+
+
+def _waiting_phrase(pending: dict | None) -> str:
+    n = (pending or {}).get("count") or 0
+    if n == 1:
+        return " Er wacht 1 label."
+    if n > 1:
+        return f" Er wachten {n} labels."
+    return ""
+
+
+def _reload_hint(kind: str) -> str:
+    # Measured on this hardware: a DYMO resumes on its own once the roll is
+    # back; a Zebra only releases its buffered label after a FEED press.
+    if kind == "zebra":
+        return (" Nieuwe rol erin, klep dicht en één keer op FEED drukken — "
+                "dan komt het wachtende label eruit.")
+    return " Nieuwe rol erin, dan print hij vanzelf verder."
+
+
+def _attention() -> list[dict]:
+    """Everything that needs a human: out of labels, jam, stuck job."""
+    items: list[dict] = []
+    pending = _pending_jobs()
+    for name in _queues():
+        kind = _configured(name).get("kind") or name
+        label = _printer_label(name)
+        alerts = _queue_alerts(name)
+        if alerts:
+            joined = "; ".join(alerts).lower()
+            reason, text = "printer_alert", "De {p} vraagt aandacht."
+            for words, key, template in _ALERT_MEANING:
+                if any(w in joined for w in words):
+                    reason, text = key, template
+                    break
+            message = text.format(p=label) + _waiting_phrase(pending.get(name))
+            if reason == "media_out":
+                message += _reload_hint(kind)
+            items.append({
+                "printer": name, "kind": kind, "reason": reason,
+                "detail": "; ".join(alerts), "message": message,
+            })
+            continue
+        job = pending.get(name) or {}
+        age = job.get("age", 0)
+        if age >= STUCK_JOB_SECONDS:
+            mins = max(1, round(age / 60))
+            items.append({
+                "printer": name, "kind": kind, "reason": "job_stuck",
+                "detail": f"oudste job wacht {age}s",
+                "message": (f"De {label} print al {mins} minuten niet."
+                            + _waiting_phrase(job)
+                            + " Labels op of vastgelopen?"),
+            })
+    # The Zebra never surfaces through CUPS; ask the printer itself.
+    for entry in CONFIGURED:
+        if entry.get("kind") != "zebra":
+            continue
+        name = entry.get("name", "")
+        if not name or any(i["printer"] == name for i in items):
+            continue
+        label = _printer_label(name)
+        hs = _zebra_host_status(name)
+        if not (hs.get("paper_out") or hs.get("paused")):
+            continue
+        buffered = hs.get("buffered") or 0
+        if buffered == 1:
+            waiting = " Er staat 1 label in het geheugen van de printer."
+        elif buffered > 1:
+            waiting = (f" Er staan {buffered} labels in het geheugen van de "
+                       "printer.")
+        else:
+            waiting = ""
+        # paper_out is the unambiguous one; a pause on this model means the
+        # same thing in practice (measured), but a human may also have hit
+        # the button — so the wording covers both without crying wolf.
+        headline = (f"Labels op in de {label}." if hs.get("paper_out")
+                    else f"De {label} print niet — labels op of op pauze.")
+        items.append({
+            "printer": name, "kind": "zebra",
+            "reason": "media_out" if hs.get("paper_out") else "paused",
+            "detail": hs.get("raw", "~HS"),
+            "buffered": buffered,
+            "message": headline + waiting + _reload_hint("zebra"),
+        })
+    return items
+
+
 def _status() -> dict:
     printers = _printer_list()
+    attention = _attention()
     return {
         "api_version": API_VERSION,
         # Kept for backwards compatibility with callers written against v0.1.
@@ -424,6 +743,10 @@ def _status() -> dict:
         "connected": any(p["connected"] for p in printers),
         "default_media": DEFAULT_MEDIA,
         "printers": printers,
+        # What needs a human right now (empty list = all good). Home Assistant
+        # polls this and pushes a notification.
+        "attention": attention,
+        "needs_attention": bool(attention),
         "queue": _out(_run(["lpstat", "-o"])).strip(),
         "devices": _out(_run(["lpstat", "-v"])).strip(),
     }
@@ -742,6 +1065,25 @@ def _do_print(data: bytes, media: str | None, copies: int, printer: str,
     fmt = (fmt or _sniff_format(data)).lower()
     copies = max(1, min(int(copies or 1), MAX_COPIES))
 
+    # Pre-flight for Zebras: they accept ZPL into their own buffer even with
+    # no labels loaded, so without this the caller gets a cheerful "printed"
+    # for a label that only exists in RAM. Measured 2026-07-28: after the
+    # first failed feed the printer holds the format and blinks; the label
+    # appears only after a new roll AND a FEED press.
+    if _configured(printer).get("kind") == "zebra":
+        hs = _zebra_host_status(printer)
+        # This ZD220 signals "can't print" by pausing, not by raising the
+        # paper-out flag, so both count as a stop.
+        if hs.get("paper_out") or hs.get("paused"):
+            notes.append("geweigerd: printer staat stil "
+                         f"({'paper out' if hs.get('paper_out') else 'pauze'}, ~HS)")
+            return {"ok": False, "error": "media_out", "printer": printer,
+                    "detail": hs.get("raw", ""),
+                    "buffered": hs.get("buffered", 0),
+                    "hint": "De Zebra print nu niet — labels op of hij staat "
+                            "op pauze. Nieuwe rol erin, klep dicht en één keer "
+                            "op FEED drukken; stuur de job daarna opnieuw."}
+
     if fmt in RAW_FORMATS:
         # Raw printer language goes to the device untouched — the job already
         # *is* what the printer speaks, so CUPS must not filter or re-render it
@@ -949,6 +1291,35 @@ def selftest():
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify(_status())
+
+
+@app.route("/attention", methods=["GET"])
+def attention():
+    """What needs a human right now — the endpoint Home Assistant polls."""
+    items = _attention()
+    return jsonify({
+        "needs_attention": bool(items),
+        "count": len(items),
+        "items": items,
+        # One ready-made line for a notification/announce.
+        "message": items[0]["message"] if items else "",
+    })
+
+
+@app.route("/debug/usb", methods=["GET"])
+def debug_usb():
+    """Which route to the Zebra we have, and what it answers to ~HS."""
+    zebras = [e.get("name") for e in CONFIGURED if e.get("kind") == "zebra"]
+    out = {
+        "usblp_nodes": _usb_lp_nodes(),
+        "dev_bus_usb": _out(_run(["sh", "-c", "ls -l /dev/bus/usb/*/ 2>&1"]))[:600],
+        "lsusb": _out(_run(["lsusb"])),
+        "zebras": zebras,
+    }
+    for name in zebras:
+        _hs_cache.pop(name, None)  # always measure fresh here
+        out[f"host_status:{name}"] = _zebra_host_status(name)
+    return jsonify(out)
 
 
 @app.route("/journal", methods=["GET"])

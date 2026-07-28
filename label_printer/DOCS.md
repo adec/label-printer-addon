@@ -150,6 +150,79 @@ at `http://<addon-hostname>:8000`. For this repository that hostname looks
 like `http://xxxxxxxx-label-printer:8000` (shown on the add-on's page); for a
 local `/addons` install it is `http://local-label-printer:8000`.
 
+## Adding a new printer model — and teaching it "out of labels"
+
+Getting a printer to *print* is the easy half. Getting it to *tell you it
+can't* is the half that needs an afternoon with the actual hardware, because
+**no two families fail the same way and none of them are honest by default**.
+Do not skip this: a printer that silently swallows a label is worse than one
+that refuses it, because the label looks printed to every layer above.
+
+Work through it in this order, with the printer in front of you:
+
+1. **Print normally first.** Get a queue, a PPD (or raw passthrough) and one
+   good label. Only then start breaking things.
+2. **Pull the media mid-life and print again.** Then look at all three
+   layers, because they disagree:
+   - `GET /debug` → `jobs` (does the job stay queued?) and the queue's
+     `Alerts:` line (does CUPS raise a printer-state-reason?);
+   - the add-on log;
+   - the printer's own status light *and* your ears (a printer that stays
+     silent has buffered your label, not printed it).
+3. **If CUPS says nothing, ask the device itself.** Raw-language printers
+   (ZPL/EPL) accept a status query over the same USB endpoint they take jobs
+   on: `~HS` for ZPL. There is usually no `/dev/usb/lp*` node (CUPS' backend
+   claims the device), so use pyusb — CUPS only holds the interface while a
+   job runs, so between jobs it is free to claim. See `_zebra_host_status`.
+4. **Do not trust the flag you expect.** Verify empirically which field
+   actually moves, one variable at a time. Vendor docs are often paywalled or
+   wrong for the specific model.
+5. **Wire it into `_attention()`** with a message that names the printer in
+   human words, says how many labels are waiting, and says what to *do* —
+   never the raw error code (that goes in `detail`).
+6. **Add a pre-flight** in `_print_bytes` for anything that can accept a job
+   it cannot print, so the caller gets an honest `ok: false` instead of a
+   label that exists only in RAM.
+7. **Re-verify by reloading the media** and confirming `/attention` empties
+   out again — a detector that never clears is an alarm nobody trusts.
+
+### What this dance produced for the two tested models (2026-07-28)
+
+| | DYMO LabelWriter 400 | Zebra ZD220 |
+|---|---|---|
+| Job while empty | stays queued, prints itself after reload | accepted into printer RAM, CUPS reports **complete** |
+| CUPS signal | `Alerts: com.dymo.out-of-paper-error` (only during/after a print attempt) | **nothing, ever** |
+| Device signal | — | `~HS` string 1: field `c` (pause) flips to 1; field `eee` counts buffered formats |
+| Paper-out flag | n/a | field `b` stayed **0** — this model pauses instead |
+| Recovery | reload roll → prints by itself | reload roll → **FEED press** needed |
+
+The same recipe extends to other supplies: a ribbon/ink-out condition
+surfaces as another `printer-state-reason` (`marker-supply-empty`,
+`ribbon-out`) or another `~HS` field — add the word to `ALERT_MEANING` with
+its human sentence and it flows through `/attention` unchanged.
+
+### Getting it to Home Assistant
+
+`GET /attention` is the endpoint to poll (`needs_attention`, `items[]`,
+`message`). A REST sensor plus one automation covers it:
+
+```yaml
+rest:
+  - resource: "http://local-label-printer:8000/attention"
+    scan_interval: 60
+    sensor:
+      - name: "Labelprinter aandacht"
+        value_template: "{{ 'ja' if value_json.needs_attention else 'nee' }}"
+        json_attributes: [count, message, items]
+```
+
+Two details worth copying: raise a **persistent notification** (with a fixed
+`notification_id`) next to the push, and dismiss it on the `to: "nee"`
+transition — the alert then lives in Home Assistant until the printer really
+works again, instead of scrolling away. Also trigger on `homeassistant.start`:
+after a restart there is no state transition, so an existing problem would
+otherwise go unmentioned.
+
 ## Troubleshooting
 
 - **Nothing prints, log shows the job spooled** — check the printer's own
@@ -160,3 +233,10 @@ local `/addons` install it is `http://local-label-printer:8000`.
 - **`printer_not_connected` from the API** — the queue exists but the device
   is off/unplugged, or you asked for a printer that is not attached. `GET
   /printers` lists what is available.
+- **`media_out` from the API on a Zebra** — the pre-flight `~HS` query found
+  the printer paused or out of labels, so the job was refused instead of
+  disappearing into printer RAM. Load a roll, close the lid, press FEED once
+  (that also releases anything already buffered), then resend.
+- **A label "printed" but never came out** — check `GET /attention` and `GET
+  /journal`. A Zebra accepts ZPL while empty and holds it; the journal shows
+  the job, `/attention` shows why nothing appeared.

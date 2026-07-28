@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.9.0
+
+- **Out-of-labels detection, per hardware family.** `GET /attention` reports
+  what needs a human, in plain language: which printer, how many labels are
+  waiting and what to do about it (the raw CUPS/ZPL code stays in `detail`).
+  Home Assistant polls this; see DOCS.md for the REST sensor + automation.
+- The two families were measured, not assumed (see the new "Adding a new
+  printer model" chapter in DOCS.md). A **DYMO** keeps the job queued and
+  raises `com.dymo.out-of-paper-error`, and resumes on its own once the roll
+  is back. A **Zebra** tells CUPS nothing at all: it accepts ZPL into printer
+  RAM and reports the job complete, so the label exists nowhere until a roll
+  AND a FEED press. Only the device itself knows, via a `~HS` query over USB
+  (pyusb — new dependency; there is no usblp node because CUPS claims the
+  device). On the ZD220 the paper-out flag stays 0 and the printer *pauses*
+  instead, while the buffered-format counter rises — both are now read.
+- **Zebra jobs get a pre-flight check**: a paused/empty printer returns
+  `ok: false, error: media_out` with a reload hint, instead of a cheerful
+  "printed" for a label that only lives in RAM.
+- Also flags jams, an open lid, low media, offline queues, and any job that
+  sits still for more than 25 seconds.
+
 ## 0.8.0
 
 - **Print journal: every job records what was done to it.** Each print

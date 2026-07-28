@@ -22,6 +22,7 @@ RUN apk add --no-cache \
     python3 \
     py3-flask \
     py3-pillow \
+    py3-usb \
     ttf-dejavu
 
 # CUPS config (no auth inside the container network).
