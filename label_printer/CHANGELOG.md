@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.11.0
+
+- **Fixed: the add-on crash-looped instead of just marking a printer
+  unavailable.** Two compounding causes, both hit by a flaky USB connection
+  (e.g. a printer browning out after a power outage):
+  1. `config.yaml` mapped `/dev/bus/usb` as a static device on top of
+     `usb: true`. That static mapping makes Supervisor's hardware monitor
+     restart the whole add-on on every USB add/remove event it sees for that
+     path — with a printer flapping on and off, that alone was a restart
+     every few seconds. Removed the redundant mapping; `usb: true` already
+     grants the same access without the restart-on-hotplug behavior.
+  2. `run.sh` ran CUPS startup and USB/printer detection (`lsusb`, `lpinfo`,
+     `lpadmin`) *before* starting the HTTP server, and that probing gets
+     much slower against a flaky USB device (retries, resets). If it took
+     too long, Supervisor's ingress/watchdog check — which expects port
+     8000 to answer soon after the container starts — decided the add-on
+     was unhealthy and killed it, restarting straight into the same slow
+     probe again. The server now starts first; all printer detection (the
+     very first scan included) runs afterwards in the background, so a slow
+     or flaky USB bus can never again block the add-on from becoming ready.
+- **Printers are now detected continuously, not just once at boot.** A
+  printer that powers up slower than the others after an outage — or one
+  that drops off USB for a moment and comes back — used to stay invisible
+  until the add-on itself restarted. `run.sh` now rescans every 5s for any
+  printer not yet registered (already-registered ones are left alone, so a
+  working printer is never re-registered or reprinted at); `server.py`
+  reloads the same file and applies its one-time geometry fixups (DYMO PPD
+  margins, Zebra `^LS0^LH0,0`) only to the newly seen entries.
+- **"connected" now means "plugged in right now", not "was seen once".**
+  It used to reflect whether a CUPS queue existed, which stays true after a
+  printer is unplugged. It now also checks the USB bus for the printer's
+  vendor ID, so the dashboard and `GET /printers` correctly show "niet
+  beschikbaar" for a printer that is temporarily gone instead of reporting
+  it as connected.
+
+## 0.10.0
+
+- **The web UI now opens.** The add-on had no ingress, so "Open Web UI" sent
+  the browser to `http://<lan-ip>:8000` — which never resolves from Nabu Casa
+  remote, from mobile data, or from any device that cannot do mDNS, so the tab
+  just span forever. The dashboard now runs through **ingress**, over Home
+  Assistant's own connection and auth, and gets a sidebar panel. Port 8000
+  stays published and unauthenticated: that is the print API for Fridge
+  Assistant, Label Assistant and external callers, and it is unchanged.
+- **A real dashboard instead of a status dump.** Per printer: a drawn
+  illustration whose LED carries live status, the loaded label, the exact
+  canvas to render (`native_px` @ dpi), accepted formats, today's count, and a
+  one-click test print. Plus today's total, a 14-day print-volume chart with a
+  table view, the filterable print journal, and the add-on's own log inline —
+  so "why is there no label" no longer needs the Log tab.
+- **Roll gauge (advisory).** Counts labels printed since you last pressed
+  **Nieuwe rol** and holds it against the roll size (pre-filled from the DYMO
+  part number: 99014 = 220, 11354 = 1000, …; editable per printer). It is a
+  guess and says so — no printer reports its remaining roll. Deliberately has
+  no entity and no notification: real out-of-labels detection stays
+  `GET /attention`, which asks the hardware. Dashboard-only.
+- Daily counters persist in `/data/print_stats.json` (60 days), so statistics
+  outlive the 100-entry journal ring; seeded once from the journal on upgrade.
+- The dashboard's own polling is filtered out of the access log, so `[print]`
+  and `[geometry]` lines stay findable.
+- New endpoints: `GET /api/state`, `GET /api/log`, `POST /api/roll`. The old
+  plain status page still lives at `/old`.
+
 ## 0.9.0
 
 - **Out-of-labels detection, per hardware family.** `GET /attention` reports

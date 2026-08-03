@@ -136,13 +136,8 @@ for _ in $(seq 1 30); do
 done
 sleep 1
 
-bashio::log.info "USB devices:"
-lsusb || true
-bashio::log.info "CUPS backends:"
-lpinfo -v || true
-
-DEVICES="$(lpinfo -v 2>/dev/null)"
 PRINTERS_JSON="[]"
+PRINTERS_JSON_PATH="/data/printers.json"
 
 add_printer_json() {
     # add_printer_json <name> <kind> <model> <media> <raster:true|false>
@@ -155,74 +150,143 @@ print(json.dumps(data))
 ")"
 }
 
-# --- DYMO ------------------------------------------------------------------
-DYMO_URI="$(printf '%s' "${DEVICES}" | grep -i 'dymo' | head -n 1 | awk '{print $2}')"
+write_printers_json() {
+    printf '%s' "${PRINTERS_JSON}" > "${PRINTERS_JSON_PATH}"
+}
 
-if [ -n "${DYMO_URI}" ]; then
-    if [ -z "${MODEL}" ] || [ "${MODEL}" = "auto" ]; then
-        DETECTED="$(detect_model "${DYMO_URI}")"
-        if [ -n "${DETECTED}" ]; then
-            MODEL="${DETECTED}"
-            bashio::log.info "Auto-detected DYMO model: ${MODEL}"
+# scan_dymo/scan_zebra register a printer the first time its USB device is
+# seen; once a queue exists they no-op (so re-running them on a timer never
+# tears down or reprints on an already-working printer). This is what lets a
+# printer that powers up slower than the others after e.g. a mains outage —
+# or one that drops off USB for a moment and comes back — get picked up
+# without the add-on itself needing to restart. quiet=1 suppresses the
+# "nothing found" log line for the periodic reruns, so a genuinely single-
+# printer setup does not spam the log forever.
+scan_dymo() {
+    local quiet="${1:-0}"
+    if lpstat -p "${DYMO_PRINTER}" >/dev/null 2>&1; then
+        return
+    fi
+    local uri
+    uri="$(lpinfo -v 2>/dev/null | grep -i 'dymo' | head -n 1 | awk '{print $2}')"
+    if [ -z "${uri}" ]; then
+        [ "${quiet}" = "0" ] && bashio::log.info "No DYMO LabelWriter found on USB."
+        return
+    fi
+
+    local model="${MODEL}"
+    if [ -z "${model}" ] || [ "${model}" = "auto" ]; then
+        local detected
+        detected="$(detect_model "${uri}")"
+        if [ -n "${detected}" ]; then
+            model="${detected}"
+            bashio::log.info "Auto-detected DYMO model: ${model}"
         else
-            MODEL="lw550"
-            bashio::log.warning "Could not auto-detect model from '${DYMO_URI}'; using lw550."
+            model="lw550"
+            bashio::log.warning "Could not auto-detect model from '${uri}'; using lw550."
         fi
     else
-        bashio::log.info "Using configured DYMO model: ${MODEL}"
+        bashio::log.info "Using configured DYMO model: ${model}"
     fi
 
-    PPD="/usr/share/cups/model/${MODEL}.ppd"
-    if ! bashio::fs.file_exists "${PPD}"; then
-        bashio::log.warning "PPD ${PPD} not found, falling back to lw550.ppd"
-        PPD="/usr/share/cups/model/lw550.ppd"
-        MODEL="lw550"
+    local ppd="/usr/share/cups/model/${model}.ppd"
+    if ! bashio::fs.file_exists "${ppd}"; then
+        bashio::log.warning "PPD ${ppd} not found, falling back to lw550.ppd"
+        ppd="/usr/share/cups/model/lw550.ppd"
+        model="lw550"
     fi
-    export PRINTER_MODEL="${MODEL}"
+    export PRINTER_MODEL="${model}"
 
-    bashio::log.info "Found DYMO at ${DYMO_URI} — registering with ${PPD}"
-    if register_queue "${DYMO_PRINTER}" "${DYMO_URI}" "${PPD}" "${DEFAULT_MEDIA}"; then
+    bashio::log.info "Found DYMO at ${uri} — registering with ${ppd}"
+    if register_queue "${DYMO_PRINTER}" "${uri}" "${ppd}" "${DEFAULT_MEDIA}"; then
         lpadmin -d "${DYMO_PRINTER}"   # default queue for callers that omit one
-        add_printer_json "${DYMO_PRINTER}" "dymo" "${MODEL}" "${DEFAULT_MEDIA}" "true"
-        bashio::log.info "Printer '${DYMO_PRINTER}' ready (model=${MODEL}, label=${DYMO_CHOICE}, media=${DEFAULT_MEDIA})."
+        add_printer_json "${DYMO_PRINTER}" "dymo" "${model}" "${DEFAULT_MEDIA}" "true"
+        write_printers_json
+        bashio::log.info "Printer '${DYMO_PRINTER}' ready (model=${model}, label=${DYMO_CHOICE}, media=${DEFAULT_MEDIA})."
     else
         bashio::log.error "Registering the DYMO queue failed."
     fi
-else
-    bashio::log.info "No DYMO LabelWriter found on USB."
-fi
+}
 
-# --- Zebra -----------------------------------------------------------------
-ZEBRA_URI="$(printf '%s' "${DEVICES}" \
-    | grep -iE 'zebra|ztc' | head -n 1 | awk '{print $2}')"
-if [ -n "${ZEBRA_URI}" ]; then
+scan_zebra() {
+    local quiet="${1:-0}"
+    if lpstat -p "${ZEBRA_PRINTER}" >/dev/null 2>&1; then
+        return
+    fi
+    local uri
+    uri="$(lpinfo -v 2>/dev/null | grep -iE 'zebra|ztc' | head -n 1 | awk '{print $2}')"
+    if [ -z "${uri}" ]; then
+        [ "${quiet}" = "0" ] && bashio::log.info "No Zebra printer found on USB."
+        return
+    fi
+
     # The device string states the active language (…ZD220-203dpi ZPL).
     # A queue with the matching driver accepts PNG/PDF (CUPS rasterises,
     # rastertolabel emits printer language); raw ZPL/EPL passes through
     # untouched either way.
-    case "$(printf '%s' "${ZEBRA_URI}" | tr '[:upper:]' '[:lower:]')" in
-        *epl*)  ZEBRA_PPD="drv:///sample.drv/zebraep2.ppd" ;;
-        *cpcl*) ZEBRA_PPD="drv:///sample.drv/zebracpl.ppd" ;;
-        *)      ZEBRA_PPD="drv:///sample.drv/zebra.ppd" ;;
+    local ppd
+    case "$(printf '%s' "${uri}" | tr '[:upper:]' '[:lower:]')" in
+        *epl*)  ppd="drv:///sample.drv/zebraep2.ppd" ;;
+        *cpcl*) ppd="drv:///sample.drv/zebracpl.ppd" ;;
+        *)      ppd="drv:///sample.drv/zebra.ppd" ;;
     esac
-    ZEBRA_MEDIA="$(mm_to_media "${ZEBRA_SIZE}")"
-    export ZEBRA_MEDIA
-    bashio::log.info "Found Zebra at ${ZEBRA_URI} — registering with ${ZEBRA_PPD}"
-    if register_queue "${ZEBRA_PRINTER}" "${ZEBRA_URI}" "${ZEBRA_PPD}" "${ZEBRA_MEDIA}"; then
-        add_printer_json "${ZEBRA_PRINTER}" "zebra" "${ZEBRA_PPD##*/}" \
-            "${ZEBRA_MEDIA}" "true"
-        bashio::log.info "Printer '${ZEBRA_PRINTER}' ready (label=${ZEBRA_SIZE} mm, media=${ZEBRA_MEDIA})."
+    local media
+    media="$(mm_to_media "${ZEBRA_SIZE}")"
+    export ZEBRA_MEDIA="${media}"
+    bashio::log.info "Found Zebra at ${uri} — registering with ${ppd}"
+    if register_queue "${ZEBRA_PRINTER}" "${uri}" "${ppd}" "${media}"; then
+        add_printer_json "${ZEBRA_PRINTER}" "zebra" "${ppd##*/}" "${media}" "true"
+        write_printers_json
+        bashio::log.info "Printer '${ZEBRA_PRINTER}' ready (label=${ZEBRA_SIZE} mm, media=${media})."
     else
         bashio::log.error "Registering the Zebra queue failed."
     fi
-else
-    bashio::log.info "No Zebra printer found on USB."
-fi
+}
 
-export PRINTERS_JSON
-bashio::log.info "Configured printers: ${PRINTERS_JSON}"
+# USB/CUPS probing (lsusb, lpinfo, lpadmin) can take a good few seconds, and
+# far longer than that when a printer's USB connection is flaky (e.g. still
+# browning out after a power outage) — lpinfo/lpadmin then retry and stall.
+# That must never delay the HTTP server itself: Supervisor's ingress check
+# (and watchdog, if enabled) expects port 8000 to answer soon after the
+# container starts, and kills+restarts the whole add-on if it does not — which
+# only repeats the same slow/flaky USB probe again, forever. So the server
+# starts first, and every bit of printer detection — the very first scan
+# included — runs afterwards, in the background, never blocking it.
+(
+    bashio::log.info "USB devices:"
+    lsusb || true
+    bashio::log.info "CUPS backends:"
+    lpinfo -v || true
 
-lpstat -t || true
+    scan_dymo 0
+    scan_zebra 0
+    export PRINTERS_JSON
+    write_printers_json
+    bashio::log.info "Configured printers: ${PRINTERS_JSON}"
+    lpstat -t || true
+
+    # Keep looking for printers that were not there yet at boot. server.py
+    # notices printers.json change and geometry-fixes/warms just the printer
+    # that is new — no add-on restart needed either way.
+    while true; do
+        sleep 5
+        scan_dymo 1
+        scan_zebra 1
+    done
+) &
+
+# Forward a stop signal to every background child — relevant now that the
+# print service is a plain background job rather than exec'd in as PID 1.
+trap 'kill -TERM $(jobs -p) 2>/dev/null' TERM INT
 
 bashio::log.info "Starting print service on :8000..."
-exec python3 /server.py
+python3 /server.py &
+PRINT_SERVICE_PID=$!
+
+# Block on the print service specifically, not the detection loop (which
+# never exits on its own): if it crashes, run.sh exits with its code just
+# like `exec` used to, so Supervisor still reacts to a real crash. `exec`
+# itself was dropped because a background job of a process `exec` replaces
+# is not reliably kept alive — the detection loop went silent after the
+# very first scan when this used `exec python3 /server.py` here instead.
+wait "${PRINT_SERVICE_PID}"
