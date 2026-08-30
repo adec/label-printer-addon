@@ -113,6 +113,12 @@ def _reload_configured_loop() -> None:
             _reload_configured()
         except Exception as err:  # noqa: BLE001 - background loop must not die
             print(f"[detect] reload failed: {err}", flush=True)
+        try:
+            # Same tick, because a roll swap is exactly as urgent as a printer
+            # appearing: both change what a client is allowed to send.
+            _alr_sync()
+        except Exception as err:  # noqa: BLE001 - background loop must not die
+            print(f"[alr] sync failed: {err}", flush=True)
 
 RAW_FORMATS = ("zpl", "epl", "raw")
 MAX_COPIES = 20
@@ -468,7 +474,10 @@ def _media_entry(media: str, dpi: int, queue: str = "",
 def _printer_entry(name: str, default_name: str | None = None) -> dict:
     cfg = _configured(name)
     kind = cfg.get("kind", "unknown")
-    media = _media_of(name) or cfg.get("media", "")
+    # The NFC tag wins: it describes the roll that is in the printer right
+    # now, where CUPS and printers.json only describe what it was last told.
+    alr = _dymo_alr(name)
+    media = alr.get("media") or _media_of(name) or cfg.get("media", "")
     raster = _has_driver(name)
     accepts = ["png", "pdf", "jpg"] if raster else []
     # Zebra speaks ZPL natively; we hand raw jobs straight to the device.
@@ -499,6 +508,14 @@ def _printer_entry(name: str, default_name: str | None = None) -> dict:
         "native_px": loaded["native_px"],
         "printable": loaded.get("printable"),
         "loaded": loaded,
+        # Where "loaded" came from, for clients that want to say so: null on
+        # printers without label recognition, else the tag's own account of
+        # the roll (sku, part, labels_left, bay state).
+        "alr": alr or None,
+        # How much of the roll is left. Lives here rather than only on the
+        # dashboard's own endpoint so /printers and /health are enough on
+        # their own for a Home Assistant sensor.
+        "roll": _roll_state(name),
         "supported": [_media_entry(m, dpi, name) for m in supported],
         "custom_media": _custom_media_ok(name),
         # How mismatched PNG/PDF sizes are handled, so clients can warn
@@ -593,7 +610,12 @@ def _zebra_host_status(printer: str) -> dict:
     if cached and now - cached[0] < _ZEBRA_HS_TTL:
         return cached[1]
     result: dict = {}
-    for node in _usb_lp_nodes():
+    # Prefer the node that is actually a Zebra. Trying every lp node in turn
+    # means writing ~HS into the DYMO as well, which it answers with nothing
+    # while briefly holding the device against the ALR poll.
+    nodes = [n for n in (_lp_node_for(ZEBRA_VID, _usb_serial_of(printer)),)
+             if n] or _usb_lp_nodes()
+    for node in nodes:
         try:
             result = _zebra_hs_via_node(node)
         except OSError:
@@ -654,6 +676,308 @@ def _zebra_hs_via_libusb() -> dict:
         return {"error": "no_reply"}
     except Exception as err:  # noqa: BLE001 - status must never break printing
         return {"error": f"{type(err).__name__}: {err}"[:120]}
+
+
+# --------------------------------------------------------------------------
+# DYMO Automatic Label Recognition (ALR) — what the roll's NFC tag says
+# --------------------------------------------------------------------------
+# Every genuine LabelWriter 550 roll carries an NFC tag, and the printer reads
+# it. The bundled DYMO driver asks for that status on every page (ESC A) but
+# throws nearly all of it away: of the 32 bytes it decodes 11, and the label's
+# identity is not among them. So we ask the printer ourselves, and the loaded
+# roll stops being something the user has to keep in sync by hand.
+#
+# Layout is from DYMO's "LabelWriter 550 Series Technical Reference" (2021),
+# confirmed byte-for-byte against this LW550 on 2026-08-30:
+#   byte 0      print engine status: 0 idle, 1 printing, 2 error, 3 cancel,
+#               4 busy, 5 unlock
+#   byte 1..4   print job id (u32 LE)
+#   byte 10     main bay status, see _ALR_BAY
+#   byte 11..22 SKU of the loaded roll, ASCII, NUL-padded ("S0722430")
+#   byte 23..26 error id (u32 LE)
+#   byte 27..28 labels left on the roll (u16 LE)
+#   byte 30     print head voltage -- note the driver reads byte 21 for this,
+#               which is inside the SKU field; that is a driver bug, and it
+#               only goes unnoticed because the padding there reads as 0.
+#
+# ESC U ("Get SKU Information") is a 63-byte NFC dump in the same document
+# that carries the label dimensions in millimetres outright, which would beat
+# any table. This printer's firmware answers it with zero bytes (measured, in
+# both the 2- and 3-byte forms), so _ALR_SKU below does that job instead.
+_ALR_TTL = 4.0
+_alr_cache: dict[str, tuple[float, dict]] = {}
+# Last good reading per queue. CUPS takes the USB interface away while a job
+# runs, so a poll mid-print gets nothing; without this the reported label size
+# would drop out and clients would resize their canvas in the middle of a job.
+_alr_last: dict[str, dict] = {}
+# Last SKU we acted on, so a roll swap is applied once and not every tick.
+_alr_applied: dict[str, str] = {}
+
+_ALR_BAY = {
+    0: ("unknown", "bay-status onbekend"),
+    1: ("open", "klep open"),
+    2: ("absent", "geen rol geladen"),
+    3: ("misfed", "rol zit niet goed"),
+    4: ("unknown", "rol geladen, status onbekend"),
+    5: ("empty", "rol is op"),
+    6: ("critical", "rol bijna op"),
+    7: ("low", "rol raakt op"),
+    8: ("ok", "rol geladen"),
+    9: ("jam", "rol vastgelopen"),
+    10: ("counterfeit", "rol niet als origineel herkend"),
+}
+
+# The NFC tag reports the roll's article number. DYMO sells the same label
+# under an old-style S-code and a newer all-numeric code and both show up on
+# tags, so both are keyed here. The media value is the LW550 PPD's own name
+# for that size -- a native name beats a Custom.WxH equivalent because it
+# brings the PPD's exact margins with it. Capacity is a full roll, which is
+# what the remaining count gets measured against.
+#
+# Only sizes that map onto a real PPD page size are listed: an unknown SKU
+# degrades safely (see _alr_sync), a wrong one would print wrong.
+_ALR_SKU: dict[str, tuple[str, str, int]] = {
+    # 89 x 28 mm - standard address
+    "S0722370": ("99010", "w79h252", 130),
+    "1983173": ("99010", "w79h252", 130),
+    # 89 x 36 mm - large address
+    "S0722400": ("99012", "w102h252", 260),
+    "1983172": ("99012", "w102h252", 260),
+    "S0722410": ("99013", "w102h252", 260),
+    # 101 x 54 mm - shipping / name badge
+    "S0722430": ("99014", "w154h286", 220),
+    "2093092": ("99014", "w154h286", 220),
+    "2223588": ("99014", "w154h286", 220),
+    "13186": ("99014", "w154h286", 220),
+    "2133399": ("99014", "w154h286", 220),
+    "2133400": ("99014", "w154h286", 220),
+    # 70 x 54 mm - large multipurpose
+    "S0722440": ("99015", "w154h198", 320),
+    "2234188": ("99015", "w154h198", 320),
+    "2234185": ("99015", "w154h198", 320),
+    # 50 x 12 mm - suspension file
+    "S0722460": ("99017", "w36h144", 110),
+    # 190 x 38 mm - narrow lever arch
+    "S0722470": ("99018", "w108h539", 110),
+    # 190 x 59 mm - wide lever arch
+    "S0722480": ("99019", "w167h539", 110),
+    # 54 x 25 mm - return address
+    "S0722520": ("11352", "w72h154", 500),
+    # 25 x 13 mm - 2-up multipurpose
+    "S0722530": ("11353", "w72h72", 1000),
+    # 57 x 32 mm - multipurpose
+    "S0722540": ("11354", "w162h90", 1000),
+    "2112289": ("11354", "w162h90", 800),
+    # 51 x 19 mm - multipurpose
+    "S0722550": ("11355", "w54h144", 500),
+    # 89 x 41 mm - small name badge
+    "S0722560": ("11356", "w118h252", 300),
+    "2234187": ("11356", "w118h252", 300),
+    "2234183": ("11356", "w118h252", 300),
+}
+
+
+def _usb_serial_of(printer: str) -> str:
+    """The USB serial CUPS has on file for a queue (from its device URI)."""
+    m = re.search(r"serial=([^&\s]+)", _out(_run(["lpstat", "-v", printer])))
+    return m.group(1) if m else ""
+
+
+def _lp_node_for(vid: int, serial: str = "") -> str:
+    """The usblp node for one printer, "" when it has none.
+
+    /dev/usb/lpN carries no hint of which printer is on the other end, so
+    resolve each node back through sysfs. Vendor alone is not enough as soon
+    as two printers from the same maker are plugged in -- a LabelWriter 550
+    next to a 450 both answer to 0x0922, and a status reply read from the
+    wrong one would be decoded as a label size. The serial in the CUPS device
+    URI is the same string sysfs reports, so prefer that and fall back to
+    vendor only when we have no serial to go on.
+    """
+    try:
+        names = sorted(n for n in os.listdir("/dev/usb") if n.startswith("lp"))
+    except OSError:
+        return ""
+    candidates = []
+    for name in names:
+        # .../<device>/<interface>/usbmisc/lpN -> up three to the device.
+        dev = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.realpath(f"/sys/class/usbmisc/{name}"))))
+        try:
+            with open(f"{dev}/idVendor") as f:
+                if int(f.read().strip(), 16) != vid:
+                    continue
+        except (OSError, ValueError):
+            continue
+        try:
+            with open(f"{dev}/serial") as f:
+                found = f.read().strip()
+        except OSError:
+            found = ""
+        if serial and found == serial:
+            return f"/dev/usb/{name}"
+        candidates.append(f"/dev/usb/{name}")
+    # No serial match. One printer of this make is unambiguous anyway; two
+    # are not, and guessing between them is how you read a 450's reply as a
+    # 550's label size, so say we found nothing instead.
+    return candidates[0] if len(candidates) == 1 else ""
+
+
+def _alr_read_status(path: str) -> bytes:
+    """Ask a LabelWriter for its 32-byte status. Never blocks, never locks."""
+    import select
+    import time as _time
+    fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+    try:
+        # Mode 0 is report-only. Mode 1 takes the print lock -- that belongs
+        # to the driver during a job and must never come from a poll.
+        os.write(fd, bytes([0x1B, ord("A"), 0]))
+        deadline = _time.time() + 1.5
+        buf = b""
+        while _time.time() < deadline and len(buf) < 32:
+            r, _, _ = select.select([fd], [], [], 0.2)
+            if not r:
+                continue
+            try:
+                chunk = os.read(fd, 32 - len(buf))
+            except BlockingIOError:
+                continue
+            if not chunk:
+                break
+            buf += chunk
+        if 0 < len(buf) < 32:
+            # A partial answer means we and the printer disagree about how
+            # long this reply is. Leaving the rest in the buffer would hand
+            # it to whoever reads next -- the driver, mid-job -- so swallow
+            # it here and report nothing rather than half of something.
+            deadline = _time.time() + 0.5
+            while _time.time() < deadline:
+                r, _, _ = select.select([fd], [], [], 0.1)
+                if not r:
+                    break
+                try:
+                    if not os.read(fd, 512):
+                        break
+                except (BlockingIOError, OSError):
+                    break
+        return buf
+    finally:
+        os.close(fd)
+
+
+def _alr_parse(status: bytes) -> dict:
+    """Decode the 32-byte status into the bits that describe the roll."""
+    sku = status[11:23].split(b"\x00")[0].decode("ascii", errors="replace").strip()
+    bay = status[10] & 0x0F
+    state, bay_text = _ALR_BAY.get(bay, ("unknown", f"bay-status {bay}"))
+    known = _ALR_SKU.get(sku)
+    entry = {
+        "sku": sku,
+        "bay": bay,
+        "state": state,
+        "bay_text": bay_text,
+        "printing": (status[0] & 0x07) in (1, 4),
+        "labels_left": status[27] | (status[28] << 8),
+        "known": bool(known),
+    }
+    if known:
+        part, media, capacity = known
+        entry.update({"part": part, "media": media, "capacity": capacity})
+    return entry
+
+
+def _alr_capable(printer: str) -> bool:
+    """Whether this printer has label recognition to ask about at all.
+
+    Only the LW550 family does (the driver draws the same line, and calls it
+    IsLW5xxPrinter). This gate is not an optimisation, it is a safety fence:
+    on a LabelWriter 450 or 400 "ESC A" is the OLD status command and answers
+    with a SINGLE byte, so polling one would leave a byte sitting in the
+    device buffer for the driver's own status read to pick up mid-job. The
+    4XL is the older generation and stays out; the 5XL is a 550 and is in.
+    """
+    cfg = _configured(printer)
+    if cfg.get("kind") != "dymo":
+        return False
+    return str(cfg.get("model") or "").lower().startswith("lw5")
+
+
+def _dymo_alr(printer: str) -> dict:
+    """What the loaded roll's NFC tag says; {} when we cannot ask at all."""
+    import time as _time
+    if not _alr_capable(printer):
+        return {}
+    cached = _alr_cache.get(printer)
+    now = _time.monotonic()
+    if cached and now - cached[0] < _ALR_TTL:
+        return cached[1]
+    result: dict = {}
+    node = _lp_node_for(DYMO_VID, _usb_serial_of(printer))
+    if node:
+        try:
+            status = _alr_read_status(node)
+        except OSError:
+            # EBUSY, or the node went away because CUPS claimed the interface
+            # for a job. Both mean "ask again in a moment", never an error.
+            status = b""
+        if len(status) == 32:
+            result = _alr_parse(status)
+            result["via"] = node
+            # Only an idle engine gives a trustworthy account of the roll.
+            # Mid-command the NFC fields come back blank (measured: SKU empty
+            # and count 0 while byte 0 reports printing/busy), and taking that
+            # at face value would replace a good reading with an empty one.
+            if result.get("printing"):
+                result = {}
+    if not result:
+        # Fall back to the last good reading rather than briefly claiming we
+        # know nothing about the roll -- during a print that is exactly when
+        # clients ask, and the roll has not changed just because we are busy.
+        stale = _alr_last.get(printer)
+        if stale:
+            result = dict(stale, stale=True)
+    else:
+        _alr_last[printer] = result
+    _alr_cache[printer] = (now, result)
+    return result
+
+
+def _alr_sync() -> None:
+    """Follow the roll: point the queue at whatever the NFC tag reports.
+
+    This is what makes a roll swap need no configuration. Within a tick the
+    queue's PageSize matches the label that is physically loaded, so jobs
+    raster at the real size instead of being fitted to a guess, and clients
+    read the new size straight off /printers.
+    """
+    for entry in CONFIGURED:
+        if entry.get("kind") != "dymo":
+            continue
+        name = entry.get("name") or ""
+        if not name:
+            continue
+        alr = _dymo_alr(name)
+        sku = alr.get("sku") or ""
+        # A stale reading is last-print's news; acting on it could move the
+        # queue while a job is still rastering against the old size.
+        previous = _alr_applied.get(name)
+        if not sku or alr.get("stale") or previous == sku:
+            continue
+        _alr_applied[name] = sku
+        media = alr.get("media")
+        if not media:
+            print(f"[alr] {name}: rol {sku!r} niet herkend — de ingestelde "
+                  "maat blijft gelden", flush=True)
+            continue
+        part = alr.get("part", "")
+        if _media_of(name) == media:
+            print(f"[alr] {name}: rol {sku} ({part}) = {media}", flush=True)
+        else:
+            _run(["lpoptions", "-p", name, "-o", f"PageSize={media}"])
+            print(f"[alr] {name}: rol gewisseld naar {sku} ({part}) — "
+                  f"PageSize={media}", flush=True)
+        # A fresh roll resets the counter; the tag's own count is the truth.
+        _roll_reset(name, alr.get("capacity"))
 
 
 # --------------------------------------------------------------------------
@@ -825,6 +1149,50 @@ def _attention() -> list[dict]:
             "buffered": buffered,
             "message": headline + waiting + _reload_hint("zebra"),
         })
+    # A roll the NFC tag cannot account for: printing still works, but on the
+    # configured size rather than a detected one, so it is worth saying out
+    # loud before a batch comes out at the wrong size.
+    #
+    # Deliberately keyed on the SKU, not on bay status 10 ("counterfeit"):
+    # this LW550 raises that on genuine 99014 rolls too, which is exactly why
+    # the driver's own check is patched out in the Dockerfile. A tag we can
+    # read is a tag we believe, whatever the bay thinks of it.
+    for entry in CONFIGURED:
+        if entry.get("kind") != "dymo":
+            continue
+        name = entry.get("name", "")
+        if not name or any(i["printer"] == name for i in items):
+            continue
+        alr = _dymo_alr(name)
+        if not alr or alr.get("stale") or alr.get("media"):
+            continue
+        if alr.get("state") in ("absent", "open", "unknown"):
+            continue  # no roll in it, or the printer is not sure yet
+        label = _printer_label(name)
+        sku = alr.get("sku") or ""
+        fallback = _default_media_for(name)
+        # The human size, not the CUPS name: this text is read out in Home
+        # Assistant and shown next to a card that already says "54 × 101 mm".
+        # With the config still on "auto" there is no size to name at all --
+        # the driver fits the page and "Ik print op auto" would say nothing.
+        if not fallback or fallback.lower() == "auto":
+            media = "de maat die de printer zelf kiest"
+        else:
+            media = _media_label(fallback)
+        if sku:
+            detail = f"SKU {sku} staat niet in de labeltabel"
+            message = (f"Onbekende rol in de {label} (artikelnummer {sku}). "
+                       f"Ik print op {media} — klopt dat niet, stel de rol "
+                       "dan in bij de add-on-configuratie.")
+        else:
+            detail = f"geen NFC-gegevens (bay-status {alr.get('bay')})"
+            message = (f"De {label} leest geen labelgegevens van deze rol. "
+                       f"Waarschijnlijk een compatibele rol zonder NFC-tag. "
+                       f"Ik print op {media}.")
+        items.append({
+            "printer": name, "kind": "dymo", "reason": "roll_unrecognised",
+            "detail": detail, "message": message,
+        })
     return items
 
 
@@ -850,7 +1218,13 @@ def _status() -> dict:
 
 def _default_media_for(printer: str) -> str:
     # The loaded label is add-on CONFIG, deliberately: it mirrors the physical
-    # roll, so it should not be flippable from a client UI by accident.
+    # roll, so it should not be flippable from a client UI by accident. On the
+    # LW550 the printer reads that roll off an NFC tag, which is the same fact
+    # from a better source -- still not client-switchable, just no longer
+    # something a human has to keep in sync.
+    alr = _dymo_alr(printer)
+    if alr.get("media"):
+        return alr["media"]
     live = _media_of(printer)
     if live:
         return live
@@ -1204,6 +1578,9 @@ _ROLL: dict[str, dict] = {}
 def _roll_default_capacity(printer: str) -> int:
     if _configured(printer).get("kind") == "zebra":
         return ZEBRA_ROLL_LABELS
+    capacity = _dymo_alr(printer).get("capacity")
+    if capacity:
+        return int(capacity)
     part = str(_addon_options().get("dymo_label", "")).split(" ")[0]
     return DYMO_ROLL_LABELS.get(part, 220)
 
@@ -1247,6 +1624,27 @@ def _roll_bump(printer: str, labels: int) -> None:
 
 
 def _roll_state(printer: str) -> dict:
+    # The printer's own count wins. It comes off the roll's ALR chip (status
+    # byte 27..28), so it survives an add-on restart, and it starts from a
+    # full roll whenever the chip is re-armed for new stock -- which is what
+    # makes it right where the job-counting estimate below silently drifts.
+    # The estimate stays on as the fallback for printers with no ALR at all
+    # (the Zebra) and for a roll whose tag we cannot read.
+    alr = _dymo_alr(printer)
+    capacity = alr.get("capacity")
+    if capacity and alr.get("state") in ("ok", "low", "critical", "empty"):
+        cap = max(1, int(capacity))
+        left = max(0, min(int(alr.get("labels_left") or 0), cap))
+        pct = round(100 * left / cap)
+        # The bay's own verdict outranks our arithmetic: it can see the
+        # end-of-roll marker coming and we can only divide.
+        level = {"empty": "empty", "critical": "low", "low": "low"}.get(
+            alr.get("state", ""), "ok" if pct > 20 else "low")
+        return {
+            "capacity": cap, "used": cap - left, "left": left, "pct": pct,
+            "level": level, "since": "", "tracked": True, "source": "alr",
+            "stale": bool(alr.get("stale")),
+        }
     entry = _ROLL.get(printer) or {}
     cap = max(1, int(entry.get("capacity") or _roll_default_capacity(printer)))
     used = max(0, int(entry.get("used") or 0))
@@ -1257,6 +1655,7 @@ def _roll_state(printer: str) -> dict:
         "level": "ok" if pct > 20 else ("low" if pct > 5 else "empty"),
         "since": entry.get("since", ""),
         "tracked": printer in _ROLL,
+        "source": "estimate",
     }
 
 
@@ -2223,7 +2622,8 @@ function statusOf(p, attention) {
       : a.reason === 'media_jam' ? 'Vastgelopen'
       : a.reason === 'cover_open' ? 'Klep open'
       : a.reason === 'media_low' ? 'Bijna leeg'
-      : a.reason === 'paused' ? 'Op pauze' : 'Vraagt aandacht';
+      : a.reason === 'paused' ? 'Op pauze'
+      : a.reason === 'roll_unrecognised' ? 'Onbekende rol' : 'Vraagt aandacht';
     return {k:'warn', t:t, i:P.alert};
   }
   return {k:'good', t:'Klaar', i:P.check};
@@ -2255,7 +2655,10 @@ function render() {
 
   /* alerts */
   $('#alerts').innerHTML = (st.attention || []).map((a) =>
-    '<div class="alert ' + (a.reason === 'media_low' ? 'warn' : 'crit') + '">' +
+    /* An unrecognised roll still prints, just on the configured size, so it
+       belongs with media_low as advice rather than beside "labels op". */
+    '<div class="alert ' + (a.reason === 'media_low' ||
+      a.reason === 'roll_unrecognised' ? 'warn' : 'crit') + '">' +
     icon(P.alert) + '<div><b>' + esc(a.message.split('.')[0]) + '.</b>' +
     '<span>' + esc(a.message.split('.').slice(1).join('.').trim()) + '</span></div></div>').join('');
 
@@ -2294,18 +2697,26 @@ function render() {
         '</dl>' +
         '<div class="roll ' + (r.level || 'ok') + '">' +
           '<div class="roll-h"><span><b>Rol</b> — ' + (r.tracked
-            ? 'nog ±' + nl.format(r.left || 0) + ' van ' + nl.format(r.capacity || 0)
+            ? (r.source === 'alr' ? 'nog ' : 'nog ±') +
+              nl.format(r.left || 0) + ' van ' + nl.format(r.capacity || 0)
             : 'ingesteld op ' + nl.format(r.capacity || 0) + ' per rol') + '</span>' +
             '<span class="roll-pct">' + (r.tracked ? r.pct + '%' : '') + '</span></div>' +
           '<div class="meter"><i style="width:' + Math.max(2, r.pct || 0) + '%"></i></div>' +
-          '<div class="roll-f"><span>' + (r.tracked
-            ? nl.format(r.used || 0) + ' geprint sinds ' + esc(r.since)
-            : 'nog niet bijgehouden — schatting start bij de eerste print') + '</span>' +
+          /* An ALR roll counts itself, so the reset/capacity buttons would
+             write to an estimate nobody reads any more — hide them rather
+             than let them report success and change nothing on screen. */
+          '<div class="roll-f"><span>' + (r.source === 'alr'
+            ? 'de printer telt zelf mee' + (r.stale ? ' — even niet bereikbaar' : '')
+            : r.tracked
+              ? nl.format(r.used || 0) + ' geprint' +
+                (r.since ? ' sinds ' + esc(r.since) : '')
+              : 'nog niet bijgehouden — schatting start bij de eerste print') + '</span>' +
+            (r.source === 'alr' ? '' :
             '<span class="roll-actions">' +
               '<button class="btn btn-sm" data-roll="reset" data-p="' + esc(p.name) + '">Nieuwe rol</button>' +
               '<button class="btn btn-sm" data-roll="capacity" data-p="' + esc(p.name) +
                 '" data-cap="' + (r.capacity || 0) + '">Aantal…</button>' +
-            '</span></div>' +
+            '</span>') + '</div>' +
         '</div>' +
         '<div><button class="btn btn-pri" data-test="' + esc(p.name) + '">' +
           icon(P.test, 'ico-sm') + 'Testprint</button></div>' +
@@ -2635,7 +3046,8 @@ def api_state():
     st = _status()
     devices = _device_models()
     for p in st["printers"]:
-        p["roll"] = _roll_state(p["name"])
+        # "roll" already comes with the entry; only the dashboard's own
+        # cosmetics are added here.
         p["device"] = devices.get(p["name"], "")
         p["title"] = _pretty_model(p.get("kind", ""), p["device"])
     return jsonify({

@@ -1,5 +1,70 @@
 # Changelog
 
+## 0.12.0
+
+- **New: the LabelWriter 550 now tells the add-on which roll is loaded, and
+  the add-on believes it.** `dymo_label: auto` used to mean "we don't know" —
+  it reported `media: auto`, `native_px: null`, and clients fell back to a
+  hardcoded canvas. It now means "ask the printer", and a roll swap needs no
+  configuration at all: within one 5s tick the queue's `PageSize`, the
+  reported `native_px` / `printable`, and the roll gauge all follow the roll
+  that is physically in the machine.
+
+  The 550 family reads an NFC tag on every roll (DYMO calls it Automatic
+  Label Recognition). The bundled DYMO driver already asks for that status on
+  every page — `ESC A`, a 32-byte reply — but decodes only 11 of those bytes
+  and throws the roll's identity away. We ask for the same 32 bytes and read
+  the rest. The layout is from DYMO's *LabelWriter 550 Series Technical
+  Reference* (2021), confirmed byte-for-byte against the real printer: bytes
+  11–22 carry the article number as ASCII (`S0722430`), bytes 27–28 the
+  labels left on the roll, byte 10 the bay status.
+
+  `ESC U`, the documented 63-byte NFC dump that carries the label dimensions
+  in millimetres outright, would have removed the need for any table — but
+  this printer's firmware answers it with zero bytes, in both its 2- and
+  3-byte forms. So a SKU→size table does that job, keyed on both the
+  old-style S-codes and the newer all-numeric article numbers, since both
+  turn up on real tags.
+
+- **New: `/printers` gained an `alr` block** — `sku`, `part`, `labels_left`,
+  bay `state` and its Dutch text — so a client can say *why* it thinks a
+  given label is loaded. `null` on printers without label recognition.
+
+- **Changed: the DYMO roll gauge is the printer's own count** rather than a
+  tally of the jobs we sent, which drifts and forgets. `roll.source` says
+  which one you are looking at (`alr` or `estimate`); the Zebra has nothing
+  to ask and keeps the estimate. The estimate's capacity now also comes from
+  the detected roll rather than the configured one.
+
+- **New: an unrecognised roll speaks up** instead of silently printing at the
+  configured size. `/attention` gains a `roll_unrecognised` item when the tag
+  reports an article number that isn't in the table, or reports nothing at
+  all (a compatible roll with no NFC tag). Printing still works and still
+  falls back to the configured size, exactly as before.
+
+  Deliberately keyed on the SKU and not on bay status 10 ("counterfeit
+  media"): this LW550 raises that on genuine rolls too, which is the whole
+  reason the driver's own check is patched out in the Dockerfile.
+
+- **Only the LW550 family is ever polled** (`lw550`, `lw550t`, `lw5xl`) — the
+  same line the DYMO driver draws, and it is a safety fence rather than an
+  optimisation. On a LabelWriter 450 or 400, `ESC A` is the *old* status
+  command and answers with a **single byte**, so polling one would leave a
+  byte in the device buffer for the driver's own status read to collect
+  mid-job. A 450/400/330/4XL is never opened at all. A short reply on any
+  model is drained rather than left behind.
+
+- **Fixed: the Zebra's `~HS` status query was being written into the DYMO.**
+  `_usb_lp_nodes()` returned every `/dev/usb/lp*` node with no idea which
+  printer was on the other end, and the query went to each in turn until one
+  answered. Harmless by itself — the DYMO says nothing — but it held the
+  device while doing so, and it put the DYMO into a state where its own
+  status reply came back with the NFC fields blank. Nodes are now resolved
+  per queue through sysfs, by the USB serial from the CUPS device URI, so
+  two printers from the same maker (a 550 beside a 450) cannot be confused
+  for one another. When the serial cannot single one out, the lookup reports
+  nothing rather than guessing.
+
 ## 0.11.1
 
 - **Fixed: a printer hot-plugged after the add-on started was never picked

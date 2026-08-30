@@ -36,9 +36,13 @@ the API, they can never change it behind your back.
 The part number is printed on the label box. After swapping the roll: pick it
 here and restart the add-on.
 
+**On a LabelWriter 550, 550 Turbo or 5XL, leave this on `auto`** and skip the
+table — the printer reads the roll itself and there is nothing to keep in
+sync. See [Automatic Label Recognition](#automatic-label-recognition) below.
+
 | Option | Size | Typical use |
 |--------|------|-------------|
-| `auto` | — | LabelWriter **550 family only**: the printer detects its own roll |
+| `auto` | detected | LabelWriter **550 family only**: read off the roll's NFC tag *(recommended there)* |
 | `99010` | 28 × 89 mm | address |
 | `99012` | 36 × 89 mm | large address |
 | `99014` | 54 × 101 mm | shipping / name badge *(default)* |
@@ -50,6 +54,40 @@ here and restart the add-on.
 | `custom` | your size | fill in **DYMO — custom label size** below |
 
 Custom size accepts millimetres (`54x101`) or a CUPS media name (`w154h286`).
+
+### Automatic Label Recognition
+
+Every genuine LabelWriter 550 roll carries an NFC tag, and the printer reads
+it. With `dymo_label: auto` the add-on asks the printer what is loaded and
+follows it: swap a roll and within about five seconds the queue's page size,
+the reported canvas, and the roll gauge have all moved with it. Nothing to
+configure, nothing to restart.
+
+What that gets you, per printer, in `GET /printers`:
+
+```json
+"alr": {
+  "sku": "S0722430",  "part": "99014",   "media": "w154h286",
+  "labels_left": 220, "capacity": 220,
+  "state": "ok",      "bay_text": "rol geladen"
+}
+```
+
+`alr` is `null` on anything without label recognition, and `roll.source` tells
+you which number you are looking at — `alr` (the printer counted) or
+`estimate` (we counted the jobs we sent).
+
+**A roll it cannot place** — a compatible roll with no tag, or an article
+number the table does not know — is not fatal. Printing carries on at the
+configured size, exactly as before, and `GET /attention` gains a
+`roll_unrecognised` item so it is visible rather than silent. If you have such
+a roll, set `dymo_label` to its part number and the warning goes away.
+
+**Only the 550 family is polled** (`lw550`, `lw550t`, `lw5xl`). This is a
+safety fence, not an optimisation: on a LabelWriter 450 or 400 the same
+`ESC A` command is the *older* status request and answers with a single byte,
+so polling one would leave a stray byte for the driver's own status read to
+pick up mid-job. A 450/400/330/4XL is never opened at all.
 
 ### Zebra — pick by size
 

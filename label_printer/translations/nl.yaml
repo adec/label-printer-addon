@@ -4,9 +4,10 @@ configuration:
     description: >-
       Welke rol er nú in je DYMO LabelWriter zit, op DYMO-artikelnummer
       (staat op het doosje). Nieuwe labels gekocht? Rol wisselen, hier
-      kiezen, add-on herstarten — klaar. "auto" laat de LabelWriter
-      550-serie zijn eigen rol herkennen; "custom" gebruikt de eigen maat
-      hieronder.
+      kiezen, add-on herstarten — klaar. Heb je een LabelWriter 550, 550
+      Turbo of 5XL? Zet 'm dan op "auto": die leest de rol van de NFC-tag
+      en volgt een rolwissel vanzelf, zonder herstarten. "custom" gebruikt
+      de eigen maat hieronder.
   dymo_custom_media:
     name: "DYMO — eigen labelmaat"
     description: >-

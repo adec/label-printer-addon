@@ -4,8 +4,9 @@ configuration:
     description: >-
       Which roll is in your DYMO LabelWriter right now, by DYMO part number
       (it's printed on the label box). Bought new labels? Swap the roll,
-      pick them here, restart the add-on — done. "auto" lets the LabelWriter
-      550 family detect its own roll; "custom" uses the custom size below.
+      pick them here, restart the add-on — done. On a LabelWriter 550, 550
+      Turbo or 5XL, set this to "auto": it reads the roll off its NFC tag and
+      follows a swap on its own, no restart. "custom" uses the size below.
   dymo_custom_media:
     name: "DYMO — custom label size"
     description: >-
