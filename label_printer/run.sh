@@ -165,13 +165,15 @@ write_printers_json() {
 scan_dymo() {
     local quiet="${1:-0}"
     if lpstat -p "${DYMO_PRINTER}" >/dev/null 2>&1; then
-        return
+        return 0
     fi
     local uri
     uri="$(lpinfo -v 2>/dev/null | grep -i 'dymo' | head -n 1 | awk '{print $2}')"
     if [ -z "${uri}" ]; then
-        [ "${quiet}" = "0" ] && bashio::log.info "No DYMO LabelWriter found on USB."
-        return
+        if [ "${quiet}" = "0" ]; then
+            bashio::log.info "No DYMO LabelWriter found on USB."
+        fi
+        return 0
     fi
 
     local model="${MODEL}"
@@ -199,7 +201,7 @@ scan_dymo() {
 
     bashio::log.info "Found DYMO at ${uri} — registering with ${ppd}"
     if register_queue "${DYMO_PRINTER}" "${uri}" "${ppd}" "${DEFAULT_MEDIA}"; then
-        lpadmin -d "${DYMO_PRINTER}"   # default queue for callers that omit one
+        lpadmin -d "${DYMO_PRINTER}" || true   # default queue for callers that omit one
         add_printer_json "${DYMO_PRINTER}" "dymo" "${model}" "${DEFAULT_MEDIA}" "true"
         write_printers_json
         bashio::log.info "Printer '${DYMO_PRINTER}' ready (model=${model}, label=${DYMO_CHOICE}, media=${DEFAULT_MEDIA})."
@@ -211,13 +213,15 @@ scan_dymo() {
 scan_zebra() {
     local quiet="${1:-0}"
     if lpstat -p "${ZEBRA_PRINTER}" >/dev/null 2>&1; then
-        return
+        return 0
     fi
     local uri
     uri="$(lpinfo -v 2>/dev/null | grep -iE 'zebra|ztc' | head -n 1 | awk '{print $2}')"
     if [ -z "${uri}" ]; then
-        [ "${quiet}" = "0" ] && bashio::log.info "No Zebra printer found on USB."
-        return
+        if [ "${quiet}" = "0" ]; then
+            bashio::log.info "No Zebra printer found on USB."
+        fi
+        return 0
     fi
 
     # The device string states the active language (…ZD220-203dpi ZPL).
@@ -253,6 +257,18 @@ scan_zebra() {
 # starts first, and every bit of printer detection — the very first scan
 # included — runs afterwards, in the background, never blocking it.
 (
+    # Detection is best-effort and must never take the add-on down with it.
+    # bashio runs this whole script under `set -e -o pipefail -o errtrace`,
+    # and inside this subshell that is a liability, not a safety net: a plain
+    # `grep` with no match — no printer of that kind on USB yet — exits
+    # non-zero, and under errexit+pipefail that alone killed this entire
+    # subshell, taking the 5s rescan loop below with it. That is exactly why a
+    # printer hot-plugged after boot was never picked up: only the boot-time
+    # scan ever ran. Turn both off for this scope and handle failure
+    # explicitly (scan_* already return 0 on "nothing found").
+    set +o errexit
+    set +o pipefail
+
     bashio::log.info "USB devices:"
     lsusb || true
     bashio::log.info "CUPS backends:"
@@ -270,8 +286,8 @@ scan_zebra() {
     # that is new — no add-on restart needed either way.
     while true; do
         sleep 5
-        scan_dymo 1
-        scan_zebra 1
+        scan_dymo 1 || true
+        scan_zebra 1 || true
     done
 ) &
 

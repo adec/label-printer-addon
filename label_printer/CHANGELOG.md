@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.11.1
+
+- **Fixed: a printer hot-plugged after the add-on started was never picked
+  up — you had to restart the add-on.** v0.11.0 added a background subshell
+  that rescans USB every 5s for printers not yet registered, but the loop
+  died on its very first tick. `bashio` runs `run.sh` under
+  `set -e -o pipefail -o errtrace`, and in `scan_dymo` / `scan_zebra` the
+  line `uri="$(lpinfo -v | grep -iE 'zebra|ztc' | …)"` exits non-zero
+  whenever that printer is not on USB yet (`grep` finds nothing) — which,
+  under errexit+pipefail, killed the whole detection subshell. So only the
+  boot-time scan ever ran: a printer present at start (typically the DYMO)
+  worked, anything plugged in later stayed invisible. The detection subshell
+  now runs with errexit/pipefail off (it is best-effort by design), the
+  `scan_*` "nothing found" paths return 0 cleanly, and the rescan loop
+  guards each call.
+
 ## 0.11.0
 
 - **Fixed: the add-on crash-looped instead of just marking a printer

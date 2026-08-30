@@ -10,7 +10,7 @@
 # queue. The ONLY thing to configure is which label roll is loaded per
 # printer — that mirrors the physical roll, so it lives here (and only here).
 name: "Label Printer"
-version: "0.11.0"
+version: "0.11.1"
 slug: "label_printer"
 description: >-
   Print PNG/PDF labels and raw ZPL on USB label printers. Auto-detects DYMO
