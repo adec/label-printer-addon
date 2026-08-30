@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.12.1
+
+- **Fixed: on a restart the DYMO queue could serve the wrong geometry for the
+  whole run — and print ~7% small.** `printers.json` survives in `/data`, so
+  the server starts against last boot's printer list while `run.sh` is still
+  registering the queues. The startup fix-up therefore ran before CUPS had
+  the queue's PPD: `_normalize_dymo_ppds` opened a file that wasn't there yet
+  and silently did nothing, and the printer was marked as handled and never
+  revisited. Without that normalisation the imageable area keeps DYMO's stock
+  margins, so `fit-to-page` scales every label down into them — the exact
+  problem the normalisation exists to prevent — and `native_px` reported the
+  imageable area (596 × 1109) instead of the label (639 × 1191).
+
+  A printer is now only counted as handled once CUPS actually has its PPD;
+  until then it stays "new" and is picked up on the next 5s tick. Registering
+  a queue also drops any PPD sizes, imageable areas and measured rasters
+  cached against the previous one.
+
+  v0.12.0 is what exposed this: with `dymo_label: auto` the media used to be
+  the literal "auto", which the warm-up skipped, so the missing normalisation
+  stayed invisible.
+
 ## 0.12.0
 
 - **New: the LabelWriter 550 now tells the add-on which roll is loaded, and

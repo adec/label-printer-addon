@@ -92,11 +92,32 @@ def _reload_configured() -> list[dict]:
     fresh = [e for e in data if e.get("name") not in _KNOWN_PRINTER_NAMES]
     if not fresh:
         return CONFIGURED
-    _KNOWN_PRINTER_NAMES.update(e["name"] for e in fresh if e.get("name"))
-    _normalize_dymo_ppds(fresh)
-    _reset_zebra_geometry(fresh)
-    _warm_native_px(fresh)
-    for entry in fresh:
+    # Wait for CUPS to actually have the queue's PPD before counting it as
+    # fixed up. printers.json survives in /data, so on a restart this runs
+    # against last boot's list while run.sh is still registering the queues --
+    # and normalising a PPD that does not exist yet silently does nothing,
+    # after which the printer was marked known and never looked at again. The
+    # result was a queue serving un-normalised geometry (the imageable area
+    # instead of the full label) for the rest of the run. Anything not ready
+    # simply stays fresh and is picked up on the next 5s tick.
+    ready = [e for e in fresh
+             if e.get("name")
+             and (not e.get("raster")
+                  or os.path.exists(f"/etc/cups/ppd/{e['name']}.ppd"))]
+    if not ready:
+        return CONFIGURED
+    _KNOWN_PRINTER_NAMES.update(e["name"] for e in ready)
+    # A queue that has only just registered brings a brand new PPD with it,
+    # so anything measured against an earlier one no longer describes it.
+    for entry in ready:
+        for key in [k for k in _MEASURED_PX if k[0] == entry["name"]]:
+            _MEASURED_PX.pop(key, None)
+        _PPD_SIZES.pop(entry["name"], None)
+        _PPD_AREAS.pop(entry["name"], None)
+    _normalize_dymo_ppds(ready)
+    _reset_zebra_geometry(ready)
+    _warm_native_px(ready)
+    for entry in ready:
         print(f"[detect] {entry.get('name')} ({entry.get('kind')}) "
               "geregistreerd", flush=True)
     return CONFIGURED
