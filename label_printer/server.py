@@ -26,10 +26,12 @@ it must not be changeable from a client UI by accident. Clients only read it.
 """
 
 import base64
+import http.client
 import json
 import logging
 import os
 import re
+import struct
 import subprocess
 import tempfile
 import threading
@@ -140,6 +142,12 @@ def _reload_configured_loop() -> None:
             _alr_sync()
         except Exception as err:  # noqa: BLE001 - background loop must not die
             print(f"[alr] sync failed: {err}", flush=True)
+        try:
+            # And the same tick again: a printer that just appeared is the
+            # reason a job stopped earlier, so this is the moment to offer it.
+            _revive_stopped_jobs()
+        except Exception as err:  # noqa: BLE001 - background loop must not die
+            print(f"[jobs] revive failed: {err}", flush=True)
 
 RAW_FORMATS = ("zpl", "epl", "raw")
 MAX_COPIES = 20
@@ -1040,8 +1048,112 @@ def _queue_alerts(name: str) -> list[str]:
     return found
 
 
-def _pending_jobs() -> dict[str, dict]:
-    """Per printer: how many jobs wait and how old the oldest one is."""
+# ``lpstat -o`` prints a job that died on a filter error exactly like one that
+# is about to come out: same rank, same size, same timestamp. That is how the
+# DYMO being switched off for a minute turned into a "labels op of
+# vastgelopen" alert that stood for nine hours while every later job printed
+# fine (11-09-2026). The difference is job-state, and Get-Jobs over IPP is the
+# only interface that hands it over — lpstat has no flag for it and this CUPS
+# build ships no ipptool.
+IPP_PENDING, IPP_HELD, IPP_PROCESSING, IPP_STOPPED = 3, 4, 5, 6
+
+# A stopped job is CUPS saying "this document is broken". On the DYMO it
+# nearly always means something else: the filter opens the printer itself to
+# read its status, so a printer that is off makes it exit 1 and CUPS stops the
+# job — and never retries it, because a filter error is supposed to mean bad
+# data. The printer being back is exactly the condition under which the label
+# would come out, so offer it again rather than ask a human to. Capped and
+# cooled down, because a job that fails for a real reason must not print-loop.
+REVIVE_MAX_TRIES = 3
+REVIVE_COOLDOWN = 30.0
+_revive_tries: dict[str, int] = {}
+_revive_last: dict[str, float] = {}
+
+
+def _ipp_attr(tag: int, name: str, value: str) -> bytes:
+    """One IPP attribute; an empty name adds a value to the previous one."""
+    n, v = name.encode(), value.encode()
+    return (bytes([tag]) + struct.pack(">H", len(n)) + n
+            + struct.pack(">H", len(v)) + v)
+
+
+def _ipp_parse_jobs(data: bytes) -> list[dict] | None:
+    """Pull the job groups out of a Get-Jobs response."""
+    if len(data) < 9 or struct.unpack(">H", data[2:4])[0] > 0x00FF:
+        return None  # status-code above successful-ok-* means: no answer
+    jobs: list[dict] = []
+    cur: dict | None = None
+    last = ""
+    i = 8  # past version, status-code and request-id
+    try:
+        while i < len(data):
+            tag = data[i]
+            i += 1
+            if tag == 0x03:  # end-of-attributes
+                break
+            if tag < 0x10:  # group delimiter
+                if tag == 0x02:  # job-attributes-tag: a new job starts here
+                    cur = {}
+                    jobs.append(cur)
+                continue
+            nl = struct.unpack(">H", data[i:i + 2])[0]
+            i += 2
+            name = data[i:i + nl].decode("utf-8", "replace")
+            i += nl
+            vl = struct.unpack(">H", data[i:i + 2])[0]
+            i += 2
+            raw = data[i:i + vl]
+            i += vl
+            key = name or last
+            last = key
+            if cur is None:  # operation attributes, before the first job
+                continue
+            if tag in (0x21, 0x23) and vl == 4:  # integer / enum
+                value = struct.unpack(">i", raw)[0]
+            elif tag == 0x22:  # boolean
+                value = bool(raw[0])
+            else:
+                value = raw.decode("utf-8", "replace")
+            if key in cur:
+                was = cur[key]
+                cur[key] = (was + [value] if isinstance(was, list)
+                            else [was, value])
+            else:
+                cur[key] = value
+    except (IndexError, struct.error) as err:
+        print(f"[jobs] IPP-antwoord onleesbaar: {err}", flush=True)
+        return None
+    return jobs
+
+
+def _ipp_jobs(queue: str) -> list[dict] | None:
+    """This queue's unfinished jobs with their real state, or None when cupsd
+    could not be asked — then the caller falls back to the lpstat reading."""
+    body = struct.pack(">HHI", 0x0101, 0x000A, 1)  # IPP/1.1, Get-Jobs, id 1
+    body += b"\x01"  # operation-attributes-tag
+    body += _ipp_attr(0x47, "attributes-charset", "utf-8")
+    body += _ipp_attr(0x48, "attributes-natural-language", "en")
+    body += _ipp_attr(0x45, "printer-uri", f"ipp://localhost/printers/{queue}")
+    body += _ipp_attr(0x44, "which-jobs", "not-completed")
+    body += _ipp_attr(0x44, "requested-attributes", "job-id")
+    for extra in ("job-state", "job-state-reasons", "time-at-creation",
+                  "job-name"):
+        body += _ipp_attr(0x44, "", extra)
+    body += b"\x03"  # end-of-attributes-tag
+    try:
+        conn = http.client.HTTPConnection("localhost", 631, timeout=5)
+        conn.request("POST", "/", body, {"Content-Type": "application/ipp"})
+        data = conn.getresponse().read()
+        conn.close()
+    except Exception as err:  # noqa: BLE001 - falling back to lpstat is fine
+        print(f"[jobs] IPP niet bereikbaar: {err}", flush=True)
+        return None
+    return _ipp_parse_jobs(data)
+
+
+def _pending_jobs_lpstat() -> dict[str, dict]:
+    """The old reading, for when IPP cannot be reached: everything in the
+    queue counts as waiting, which is what this service assumed until now."""
     import datetime
     import time as _time
     out: dict[str, dict] = {}
@@ -1062,10 +1174,107 @@ def _pending_jobs() -> dict[str, dict]:
                 continue
         if age is None:
             age = STUCK_JOB_SECONDS + 1  # unparsable = assume it's waiting
-        entry = out.setdefault(queue, {"count": 0, "age": 0})
+        entry = out.setdefault(queue, _empty_pending())
         entry["count"] += 1
         entry["age"] = max(entry["age"], age)
     return out
+
+
+def _empty_pending() -> dict:
+    return {"count": 0, "age": 0, "dead": 0, "dead_age": 0, "dead_ids": []}
+
+
+def _pending_jobs() -> dict[str, dict]:
+    """Per printer: what is really still coming out (``count``/``age``) and
+    what is only lying there (``dead``). A stopped job is not a label on its
+    way — saying "er wacht 1 label" about one sends someone to the printer to
+    look for a jam that does not exist."""
+    import time as _time
+    now = _time.time()
+    out: dict[str, dict] = {}
+    stale: dict[str, dict] | None = None
+    for queue in _queues():
+        jobs = _ipp_jobs(queue)
+        if jobs is None:
+            if stale is None:
+                stale = _pending_jobs_lpstat()
+            if queue in stale:
+                out[queue] = stale[queue]
+            continue
+        entry = _empty_pending()
+        for job in jobs:
+            created = job.get("time-at-creation")
+            waiting_since = created if isinstance(created, int) else now
+            # A job we just re-offered starts waiting again from that moment,
+            # not from when it was first submitted -- otherwise every retry of
+            # an hours-old job reads as "this printer has been stuck for
+            # hours" the instant it goes back to pending.
+            waiting_since = max(
+                waiting_since,
+                _revive_last.get(f"{queue}-{job.get('job-id')}", 0.0))
+            age = max(0, int(now - waiting_since))
+            if job.get("job-state") == IPP_STOPPED:
+                entry["dead"] += 1
+                entry["dead_age"] = max(entry["dead_age"], age)
+                if isinstance(job.get("job-id"), int):
+                    entry["dead_ids"].append(job["job-id"])
+            else:
+                entry["count"] += 1
+                entry["age"] = max(entry["age"], age)
+        if entry["count"] or entry["dead"]:
+            out[queue] = entry
+    return out
+
+
+def _revive_stopped_jobs() -> None:
+    import time as _time
+    now = _time.time()
+    seen: set[str] = set()
+    for queue in _queues():
+        jobs = _ipp_jobs(queue)
+        if not jobs:
+            continue
+        stopped = [j for j in jobs if j.get("job-state") == IPP_STOPPED]
+        seen.update(f"{queue}-{j.get('job-id')}" for j in jobs)
+        if not stopped:
+            continue
+        vid = _VID_BY_KIND.get(_configured(queue).get("kind") or queue)
+        if vid is not None and not _usb_present(vid):
+            continue  # still off or unplugged: nothing to retry into
+        if _queue_alerts(queue):
+            continue  # out of labels or jammed: that needs a human first
+        for job in stopped:
+            jid = job.get("job-id")
+            if not isinstance(jid, int):
+                continue
+            key = f"{queue}-{jid}"
+            tries = _revive_tries.get(key, 0)
+            if tries >= REVIVE_MAX_TRIES:
+                continue
+            if now - _revive_last.get(key, 0.0) < REVIVE_COOLDOWN:
+                continue
+            _revive_last[key] = now
+            _revive_tries[key] = tries + 1
+            res = _run(["lp", "-i", key, "-H", "restart"])
+            # cupsd withholds job-name from anyone but the owner, so it is
+            # often simply absent -- the id is the part that always works.
+            name = job.get("job-name")
+            what = f"{key} ({name})" if name else key
+            if res.returncode == 0:
+                print(f"[jobs] {what} stond gestopt — opnieuw aangeboden, "
+                      f"poging {tries + 1} van {REVIVE_MAX_TRIES}", flush=True)
+            else:
+                print(f"[jobs] {key} opnieuw aanbieden mislukt: "
+                      f"{_err(res) or res.returncode}", flush=True)
+    for key in [k for k in _revive_tries if k not in seen]:
+        _revive_tries.pop(key, None)
+        _revive_last.pop(key, None)
+
+
+def _revive_exhausted(queue: str, job_ids: list) -> list:
+    """The stopped jobs we have stopped retrying — those need a human."""
+    return [i for i in job_ids
+            if _revive_tries.get(f"{queue}-{i}", 0) >= REVIVE_MAX_TRIES]
 
 
 # How a printer is named to a human, and what CUPS jargon actually means.
@@ -1132,12 +1341,30 @@ def _attention() -> list[dict]:
         age = job.get("age", 0)
         if age >= STUCK_JOB_SECONDS:
             mins = max(1, round(age / 60))
+            duur = "1 minuut" if mins == 1 else f"{mins} minuten"
             items.append({
                 "printer": name, "kind": kind, "reason": "job_stuck",
                 "detail": f"oudste job wacht {age}s",
-                "message": (f"De {label} print al {mins} minuten niet."
+                "message": (f"De {label} print al {duur} niet."
                             + _waiting_phrase(job)
                             + " Labels op of vastgelopen?"),
+            })
+            continue
+        # Only worth a human once retrying has been given up on: until then
+        # the printer coming back still gets the label out by itself.
+        givenup = _revive_exhausted(name, job.get("dead_ids") or [])
+        if givenup:
+            n = len(givenup)
+            headline = (f"Een print op de {label} is mislukt en blijft in de "
+                        "wachtrij staan." if n == 1 else
+                        f"{n} prints op de {label} zijn mislukt en blijven in "
+                        "de wachtrij staan.")
+            items.append({
+                "printer": name, "kind": kind, "reason": "job_failed",
+                "detail": f"gestopte job(s) {', '.join(str(i) for i in givenup)}"
+                          f", {REVIVE_MAX_TRIES}x opnieuw aangeboden",
+                "message": (headline + " Opnieuw aanbieden hielp niet — print "
+                            "opnieuw of gooi de wachtrij leeg."),
             })
     # The Zebra never surfaces through CUPS; ask the printer itself.
     for entry in CONFIGURED:

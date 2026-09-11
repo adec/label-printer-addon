@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.13.0
+
+- **Fixed: a print that failed while the printer was off stayed in the queue
+  forever and reported the printer as jammed.** Measured 11-09-2026: a label
+  was sent while the DYMO was switched off, so `raster2dymolw_v2` — which
+  opens the printer itself to read its status — timed out and exited 1. CUPS
+  treats a filter error as "this document is broken", so it stopped that one
+  job, left the queue enabled and never retried it. Every later print went
+  through fine while the dead job sat at rank 1 for nine hours.
+
+  Two things were wrong with that. `_pending_jobs()` read `lpstat -o`, which
+  prints a stopped job exactly like a waiting one, so the corpse counted as a
+  label on its way out: *"De DYMO print al 521 minuten niet. Er wacht 1
+  label. Labels op of vastgelopen?"* — about a printer that was idle and
+  healthy. And nothing ever retried the job, even though the reason it failed
+  (printer off) had long since gone away.
+
+  Job state now comes from IPP `Get-Jobs` (`_ipp_jobs`), the only interface
+  that reports `job-state` — `lpstat` has no flag for it and this build ships
+  no `ipptool`. Stopped jobs are counted separately from waiting ones, and
+  `_revive_stopped_jobs()` re-offers them (`lp -H restart`) as soon as the
+  printer is back on the bus and free of alerts: up to 3 tries, 30s apart.
+  Only after that does `/attention` mention it, and then it says what is
+  actually true — the print failed and is still in the queue. A revived job's
+  waiting time is measured from the retry, so a retry of an hours-old job no
+  longer reads as "stuck for hours" the moment it goes pending. If cupsd
+  cannot be reached over IPP the old `lpstat` reading takes over unchanged.
+
 ## 0.12.1
 
 - **Fixed: on a restart the DYMO queue could serve the wrong geometry for the
