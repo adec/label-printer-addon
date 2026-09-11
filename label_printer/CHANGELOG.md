@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.13.1
+
+- **Fixed: `/selftest` refused its own label on the DYMO.** It drew on a
+  hard-coded 642 × 1192 canvas, three pixels off the 639 × 1191 this queue
+  actually rasters — a leftover from before v0.4.1 measured the real raster
+  size instead of deriving it from the media name. With `dymo_size_mismatch`
+  on `reject` the print path threw the image straight back out
+  (`size_mismatch`), so the one endpoint whose whole purpose is to prove the
+  chain works could not print at all.
+
+  The canvas now comes from `_policy_target_px()` — the same function the
+  print path measures against, so the two cannot drift apart again — and the
+  drawing scales to it instead of sitting at fixed pixel offsets. The label
+  also prints its own raster size, which makes a future mismatch readable off
+  the sticker.
+
 ## 0.13.0
 
 - **Fixed: a print that failed while the printer was off stayed in the queue

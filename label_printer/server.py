@@ -2217,15 +2217,29 @@ def selftest():
     import io
 
     from PIL import Image, ImageDraw
-    img = Image.new("L", (642, 1192), 255)
+    media = _default_media_for(printer)
+    dpi = DPI_BY_KIND.get(_configured(printer).get("kind"), 300)
+    # Ask for the canvas the same way the print path does, instead of drawing
+    # on a size someone once measured. The hard-coded 642 x 1192 was three
+    # pixels off what this queue actually rasters, so with the size policy on
+    # "reject" the self-test refused its own label -- the one endpoint whose
+    # whole job is to prove the chain works.
+    size = _policy_target_px(printer, media) or _native_px(media, dpi, printer)
+    w, h = size if size else (642, 1192)
+    img = Image.new("L", (w, h), 255)
     d = ImageDraw.Draw(img)
-    d.rounded_rectangle([12, 12, 629, 1179], radius=30, outline=0, width=3)
-    d.text((60, 80), "LABEL PRINTER OK", fill=0)
-    d.text((60, 140), f"{printer} - {_media_label(_media_of(printer))}", fill=0)
+    inset = max(4, round(w * 0.019))
+    d.rounded_rectangle([inset, inset, w - inset - 1, h - inset - 1],
+                        radius=round(w * 0.047), outline=0, width=3)
+    d.text((round(w * 0.094), round(h * 0.067)), "LABEL PRINTER OK", fill=0)
+    d.text((round(w * 0.094), round(h * 0.117)),
+           f"{printer} - {_media_label(media)}", fill=0)
+    d.text((round(w * 0.094), round(h * 0.167)), f"{w} x {h} px @ {dpi} dpi",
+           fill=0)
     buf = io.BytesIO()
-    img.save(buf, format="PNG", dpi=(300, 300))
-    result = _print_bytes(buf.getvalue(), _default_media_for(printer), 1,
-                          printer, source="selftest")
+    img.save(buf, format="PNG", dpi=(dpi, dpi))
+    result = _print_bytes(buf.getvalue(), media, 1, printer,
+                          source="selftest")
     return jsonify(result), (200 if result.get("ok") else 503)
 
 
