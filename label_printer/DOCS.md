@@ -1,3 +1,62 @@
+## Brother QL-1110NWB over Wi-Fi or Ethernet
+
+This fork adds a `brother` printer to the existing HTTP API. It renders
+PNG/JPEG/PDF to Brother raster commands at 300 dpi and sends them directly
+to the printer's TCP port (default 9100). USB DYMO/Zebra printing still uses CUPS.
+
+Install this repository (`https://github.com/adec/label-printer-addon`) in the
+Home Assistant add-on store, install or rebuild Label Printer, and set:
+
+```yaml
+brother_host: "192.168.1.50"  # your printer's IP address or DNS hostname
+brother_port: 9100
+brother_label: "102x152"    # MUST match the physical DK roll
+brother_length_mm: 100      # only used for continuous rolls
+brother_cut: true
+brother_size_mismatch: "scale"
+brother_crop_align: "center"
+```
+
+Leave `brother_host` empty to disable Brother printing. Reserve the printer's
+IP address in DHCP, or use a stable hostname. Home Assistant must be able to
+reach the printer on TCP 9100, including across VLANs if applicable. Restart
+the add-on after configuration changes.
+
+Select continuous rolls by width (`12`, `29`, `38`, `50`, `54`, `62`, `102`,
+`103`), or rectangular die-cut rolls by size (for example `62x100`, `102x51`,
+`102x152`, `103x164`). Continuous length is 26–3000 mm. The driver cannot
+encode three short die-cut sizes (`52x29`, `54x29`, `62x29`) for this model;
+they are excluded. Red/black and round labels are not supported by this path.
+
+```sh
+curl http://HOME_ASSISTANT:8000/printers
+curl -F printer=brother -F file=@label.png http://HOME_ASSISTANT:8000/print
+curl -X POST 'http://HOME_ASSISTANT:8000/selftest?printer=brother'
+```
+
+Use `loaded.native_px` from `/printers` as the design canvas. It is the
+**printable raster**, with the roll's physical margins already excluded;
+`printable.rect_px` covers that canvas. `scale` fits and preserves aspect
+ratio, `crop` keeps one pixel per dot and crops/pads, and `reject` returns 422
+unless dimensions match. Transparent pixels become white. PDFs use Ghostscript
+and print all pages. Copies are clamped to the service's existing maximum.
+Only the configured loaded roll can be used; raw ZPL is rejected for Brother.
+
+A successful Brother response has `ok: true`, `submitted: true`, and
+`printed: false`: TCP transmission does not confirm paper movement, roll
+compatibility, or physical completion. `connected` means port 9100 was reachable,
+not that labels are loaded. No Brother paper-out or roll-recognition status is
+available yet. History and roll counters estimate submitted jobs. If a network
+send fails partway through, check the printer before retrying to avoid duplicates.
+
+The Brother dependency is pinned to upstream commit
+`9eb7b69eac9778e5a569fd896768c392e5c7c7e7` of
+[brother_ql_next](https://github.com/LunarEclipse363/brother_ql_next).
+This driver includes a QL-1110NWB model definition; physical output has not yet
+been validated on this fork's target printer. The container build also needs
+validation on Home Assistant; no Docker runtime was available in development.
+
+
 # Label Printer
 
 A small, generic **label print service** for USB label printers. It receives a

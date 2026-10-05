@@ -20,6 +20,7 @@ RUN apk add --no-cache \
     unzip \
     ghostscript \
     python3 \
+    py3-pip \
     py3-flask \
     py3-pillow \
     py3-usb \
@@ -51,6 +52,13 @@ RUN cd /tmp \
     && cd / \
     && rm -rf /tmp/dymo_drivers /tmp/dymo_drivers.zip
 
+# Isolated Python environment; keep Alpine's Flask/Pillow available.
+# Pin the driver source because QL-1110NWB support is newer than its release.
+RUN python3 -m venv --system-site-packages /opt/brother \
+    && /opt/brother/bin/pip install --no-cache-dir \
+       'brother_ql_next @ git+https://github.com/LunarEclipse363/brother_ql_next.git@9eb7b69eac9778e5a569fd896768c392e5c7c7e7'
+ENV PATH="/opt/brother/bin:$PATH"
+COPY brother_network.py /brother_network.py
 COPY run.sh /run.sh
 COPY server.py /server.py
 RUN chmod a+x /run.sh

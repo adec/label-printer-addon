@@ -63,6 +63,8 @@ logging.getLogger("werkzeug").addFilter(_QuietPolls())
 # The DYMO queue stays the default so every existing caller (the Fridge
 # Assistant integration, Label Assistant, automations) keeps working when it
 # doesn't name a printer.
+import brother_network
+
 DEFAULT_PRINTER = os.environ.get("PRINTER_NAME", "dymo")
 DEFAULT_MEDIA = os.environ.get("DEFAULT_MEDIA", "w154h286")
 MODEL = os.environ.get("PRINTER_MODEL", "")
@@ -218,10 +220,15 @@ def _err(res) -> str:
 # --------------------------------------------------------------------------
 def _queues() -> list[str]:
     """Queue names CUPS currently has, in the order it lists them."""
-    return re.findall(r"^printer (\S+)", _out(_run(["lpstat", "-p"])), re.M)
+    names = re.findall(r"^printer (\S+)", _out(_run(["lpstat", "-p"])), re.M)
+    if brother_network.config(_addon_options()):
+        names = [n for n in names if n != "brother"] + ["brother"]
+    return names
 
 
 def _queue_exists(name: str) -> bool:
+    if name == "brother":
+        return bool(brother_network.config(_addon_options()))
     return _run(["lpstat", "-p", name]).returncode == 0
 
 
@@ -290,6 +297,8 @@ def _media_label(media: str) -> str:
 
 
 def _configured(name: str) -> dict:
+    if name == "brother":
+        return brother_network.config(_addon_options())
     for entry in CONFIGURED:
         if entry.get("name") == name:
             return entry
@@ -417,6 +426,8 @@ def _native_px(media: str, dpi: int, queue: str = "") -> list[int] | None:
     cupsRasterInterpretPPD); Custom.WxH sizes are truncated, matching
     imagetoraster's custom-size math (295 pt @203dpi -> 831 dots, not 832).
     """
+    if queue == "brother":
+        return brother_network.size(media, _addon_options())
     dims = _ppd_sizes(queue) if queue else {}
     if media in dims:
         return [round(p / 72 * dpi) for p in dims[media]]
@@ -502,6 +513,17 @@ def _media_entry(media: str, dpi: int, queue: str = "",
 
 def _printer_entry(name: str, default_name: str | None = None) -> dict:
     cfg = _configured(name)
+    if name == "brother":
+        opts = _addon_options()
+        loaded = brother_network.media_entry(cfg["media"], opts)
+        mode, align = _size_policy(name)
+        return {"name": name, "kind": "brother", "model": cfg["model"],
+                "connected": brother_network.connected(cfg), "dpi": 300,
+                "transport": "tcp", "default": name == (default_name or _default_queue()),
+                **loaded, "loaded": loaded, "alr": None, "roll": _roll_state(name),
+                "supported": [brother_network.media_entry(m, opts) for m in brother_network.LABELS],
+                "custom_media": False, "size_policy": {"mode": mode, "align": align},
+                "accepts": ["png", "pdf", "jpg"]}
     kind = cfg.get("kind", "unknown")
     # The NFC tag wins: it describes the roll that is in the printer right
     # now, where CUPS and printers.json only describe what it was last told.
@@ -1280,7 +1302,7 @@ def _revive_exhausted(queue: str, job_ids: list) -> list:
 # How a printer is named to a human, and what CUPS jargon actually means.
 # A notification must say what happened AND what to do — "com.dymo.
 # out-of-paper-error" helps nobody at the fridge with a label in hand.
-_KIND_LABEL = {"dymo": "DYMO", "zebra": "Zebra"}
+_KIND_LABEL = {"dymo": "DYMO", "zebra": "Zebra", "brother": "Brother"}
 _ALERT_MEANING = (
     (("out-of-paper", "media-empty", "media-needed", "marker-supply-empty"),
      "media_out", "Labels op in de {p}."),
@@ -1465,6 +1487,8 @@ def _status() -> dict:
 
 
 def _default_media_for(printer: str) -> str:
+    if printer == "brother":
+        return _configured(printer).get("media", "")
     # The loaded label is add-on CONFIG, deliberately: it mirrors the physical
     # roll, so it should not be flippable from a client UI by accident. On the
     # LW550 the printer reads that roll off an NFC tag, which is the same fact
@@ -1824,7 +1848,7 @@ _ROLL: dict[str, dict] = {}
 
 
 def _roll_default_capacity(printer: str) -> int:
-    if _configured(printer).get("kind") == "zebra":
+    if _configured(printer).get("kind") in ("zebra", "brother"):
         return ZEBRA_ROLL_LABELS
     capacity = _dymo_alr(printer).get("capacity")
     if capacity:
@@ -1995,6 +2019,10 @@ def _src_px(data: bytes, fmt: str) -> list[int] | None:
 
 def _do_print(data: bytes, media: str | None, copies: int, printer: str,
               fmt: str | None, notes: list[str]) -> dict:
+    if printer == "brother":
+        return brother_network.print_job(data, (fmt or _sniff_format(data)).lower(),
+                                         media, max(1, min(int(copies or 1), MAX_COPIES)),
+                                         _addon_options(), _rasterize_pdf, notes)
     if not _queue_exists(printer):
         known = _queues()
         notes.append(f"queue '{printer}' bestaat niet of is offline")
@@ -2184,7 +2212,8 @@ def print_label():
         return jsonify(result), 200
     # A size-policy rejection is the caller's problem (fix the render size),
     # not a printer outage — signal it as such.
-    client_errors = ("size_mismatch", "bad_image", "pdf_raster_failed")
+    client_errors = ("size_mismatch", "bad_image", "pdf_raster_failed",
+                     "invalid_media", "unsupported_format")
     return jsonify(result), (422 if result.get("error") in client_errors
                              else 503)
 
@@ -2983,7 +3012,7 @@ function render() {
         '<div><button class="btn btn-pri" data-test="' + esc(p.name) + '">' +
           icon(P.test, 'ico-sm') + 'Testprint</button></div>' +
       '</div></article>';
-  }).join('') || '<div class="card empty">Geen printers gevonden. Zit de USB-kabel erin?</div>';
+  }).join('') || '<div class="card empty">Geen printers gevonden. Controleer USB of de Brother-netwerkconfiguratie.</div>';
 
   renderChart();
   renderFilters();
@@ -3294,7 +3323,7 @@ def _pretty_model(kind: str, device: str) -> str:
     name = re.sub(r"^ZTC\s+", "", device or "")
     name = re.sub(r"[-\s]\d+\s*dpi", "", name, flags=re.I)
     name = re.sub(r"\s+(ZPL|EPL|CUPS|Series).*$", "", name, flags=re.I).strip()
-    maker = {"dymo": "DYMO", "zebra": "Zebra"}.get(kind, "")
+    maker = {"dymo": "DYMO", "zebra": "Zebra", "brother": "Brother"}.get(kind, "")
     if not name:
         return maker or kind.title()
     if maker and not name.lower().startswith(maker.lower()):

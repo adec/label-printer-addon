@@ -22,6 +22,9 @@ if bashio::fs.file_exists "${LIVE_DIR}/cupsd.conf"; then
 fi
 if bashio::fs.file_exists "${LIVE_DIR}/server.py"; then
     cp "${LIVE_DIR}/server.py" /server.py
+    if bashio::fs.file_exists "${LIVE_DIR}/brother_network.py"; then
+        cp "${LIVE_DIR}/brother_network.py" /brother_network.py
+    fi
     bashio::log.info "Using live server.py from /share"
 fi
 

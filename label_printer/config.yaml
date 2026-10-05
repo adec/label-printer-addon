@@ -10,13 +10,13 @@
 # queue. The ONLY thing to configure is which label roll is loaded per
 # printer — that mirrors the physical roll, so it lives here (and only here).
 name: "Label Printer"
-version: "0.13.1"
+version: "0.14.0"
 slug: "label_printer"
 description: >-
-  Print PNG/PDF labels and raw ZPL on USB label printers. Auto-detects DYMO
+  Print PNG/PDF labels on Brother QL-1110NWB over the network and USB label printers. Auto-detects DYMO
   LabelWriter and Zebra printers side by side, exposes an HTTP API, and lets
   you pick the loaded label roll by DYMO part number or Zebra size.
-url: "https://github.com/MaxGramser/label-printer-addon"
+url: "https://github.com/adec/label-printer-addon"
 arch:
   - aarch64
   - amd64
@@ -51,6 +51,13 @@ panel_title: "Label Printer"
 map:
   - share:rw
 options:
+  brother_host: ""
+  brother_port: 9100
+  brother_label: "62"
+  brother_length_mm: 100
+  brother_cut: true
+  brother_size_mismatch: "scale"
+  brother_crop_align: "center"
   dymo_label: "99014 (54 x 101 mm)"
   dymo_custom_media: "54x101"
   dymo_size_mismatch: "scale"
@@ -62,6 +69,13 @@ options:
   printer_model: "auto"
   log_level: "info"
 schema:
+  brother_host: "str?"
+  brother_port: "port"
+  brother_label: "list(12|29|38|50|54|62|102|103|17x54|17x87|29x42|29x90|39x90|39x48|60x86|62x100|102x51|102x152|103x164)"
+  brother_length_mm: "int(26,3000)"
+  brother_cut: "bool"
+  brother_size_mismatch: "list(scale|crop|reject)"
+  brother_crop_align: "list(center|leading-edge)"
   dymo_label: "list(auto|99010 (28 x 89 mm)|99012 (36 x 89 mm)|99014 (54 x 101 mm)|99015 (54 x 70 mm)|11352 (25 x 54 mm)|11354 (57 x 32 mm)|99019 (59 x 102 mm)|904980 (104 x 159 mm)|custom)"
   dymo_custom_media: "str?"
   dymo_size_mismatch: "list(scale|crop|reject)"

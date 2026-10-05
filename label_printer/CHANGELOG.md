@@ -1,3 +1,11 @@
+## 0.14.0 — Brother network printing
+
+- Add QL-1110NWB printing over Wi-Fi/Ethernet using Brother raster over TCP.
+- Add roll, continuous length, cut and scale/crop/reject options.
+- Discover the network printer through the existing API and dashboard.
+- Report transmission separately from confirmed physical output; reject ZPL.
+- Add raster, TCP delivery, API, size-policy and offline tests.
+
 # Changelog
 
 ## 0.13.1
