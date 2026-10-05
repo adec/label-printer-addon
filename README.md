@@ -1,11 +1,14 @@
-# Label Printer — Home Assistant add-on repository
+# Label Printer — Grocy Edition
 
-[![Add repository to my Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2FMaxGramser%2Flabel-printer-addon)
+[![Add repository to my Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fadec%2Flabel-printer-addon%23grocy-labels)
 
-A generic **label print service** for USB label printers in Home Assistant.
-Send it a finished **PNG/PDF** — or **raw ZPL** — over HTTP and it prints via
-CUPS. It renders nothing itself, so *anything* that can produce a label can
-print with it.
+A **label print service** for Home Assistant, with Brother QL-1110NWB network
+printing and Grocy food labels. This edition adds product categories and correct
+best-before/expiry headings. Existing Fridge Assistant PNG/PDF printing and
+USB DYMO/Zebra support are retained.
+
+Install using `https://github.com/adec/label-printer-addon#grocy-labels`.
+See [Grocy setup](GROCY.md) for Docker Grocy configuration.
 
 - 🔌 **Plugged in + recognized = available** — auto-detects DYMO LabelWriter
   (300/400/450/550/4XL/5XL) and Zebra ZPL/EPL printers side by side, no
@@ -23,7 +26,7 @@ This fork adds a `brother` printer to the existing HTTP API. It renders
 PNG/JPEG/PDF to Brother raster commands at 300 dpi and sends them directly
 to the printer's TCP port (default 9100). USB DYMO/Zebra printing still uses CUPS.
 
-Install this repository (`https://github.com/adec/label-printer-addon`) in the
+Install this repository (`https://github.com/adec/label-printer-addon#grocy-labels`) in the
 Home Assistant add-on store, install or rebuild Label Printer, and set:
 
 ```yaml
@@ -120,7 +123,22 @@ Full documentation: [label_printer/DOCS.md](label_printer/DOCS.md).
 
 Both work fine without a printer; install this add-on to make them print.
 
+## Grocy food labels
+
+Version `0.16.1` provides `/grocy/print` and `/grocy/image`: attractive food labels
+rendered from Grocy's native webhook payload, using the existing networked
+Brother QL-1110NWB and detected continuous/pre-cut roll dimensions. Grocy can
+run in Docker outside Home Assistant. Product group names and best-before/expiry
+headings are resolved from webhook metadata and optional Grocy API lookups. See [Grocy setup and previews](GROCY.md).
+The new Grocy label feature has automated scan/TCP tests; its container build
+and physical output still need verification.
+
 ## AI assistance
+
+The Grocy label renderer, webhook integration, tests and documentation were
+also developed with assistance from OpenAI Codex, using the maintainer's label
+photo as a design reference. Its automated tests pass; the new Grocy label
+output has not yet been physically verified.
 
 The Brother network-printing implementation, tests and documentation were
 developed with assistance from OpenAI Codex. Development was directed by the
