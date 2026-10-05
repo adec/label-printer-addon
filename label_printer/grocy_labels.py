@@ -328,44 +328,22 @@ def render_label(data, size):
     # Banner and optional category chip.
     banner_h = area(.085)
     draw.rounded_rectangle((0, 0, width - 1, banner_h), radius=max(6, round(16 * scale)), fill=0)
-    label = (data.category or 'GROCY').upper()
-    chip_w = min(round(inner * .4), round(238 * scale)) if data.location else 0
-    gap = max(8, round(width * .025)) if chip_w else 0
-    _draw_fitted(draw, label, (margin, 0, inner - chip_w - gap, banner_h),
+    label = (data.location or 'GROCY').upper()
+    _draw_fitted(draw, label, (margin, 0, inner, banner_h),
                  start=46 * scale, bold=True, fill=255, max_lines=1,
-                 truncate=True, vertical_center=True)
-    if data.location:
-        chip_text = data.location.upper()
-        padding_x = max(6, round(12 * scale))
-        padding_y = max(5, round(7 * scale))
-        for chip_size in range(max(8, round(42 * scale)), 7, -1):
-            chip_font = _font(chip_size, True)
-            bounds = draw.textbbox((0, 0), chip_text, font=chip_font)
-            if (draw.textlength(chip_text, font=chip_font) <= chip_w - 2 * padding_x
-                    and bounds[3] - bounds[1] + 2 * padding_y <= banner_h):
-                break
-        else:
-            while chip_text and draw.textlength(chip_text + '…', font=chip_font) > chip_w - 2 * padding_x:
-                chip_text = chip_text[:-1]
-            chip_text += '…'
-            bounds = draw.textbbox((0, 0), chip_text, font=chip_font)
-        text_h = bounds[3] - bounds[1]
-        chip_h = text_h + 2 * padding_y
-        chip_x = width - margin - chip_w
-        chip_y = (banner_h - chip_h) / 2
-        draw.rounded_rectangle((chip_x, chip_y, width - margin, chip_y + chip_h),
-                               radius=max(4, round(10 * scale)), outline=255,
-                               width=max(1, round(scale * 2)))
-        draw.text((chip_x + (chip_w - draw.textlength(chip_text, font=chip_font)) / 2,
-                   chip_y + padding_y - bounds[1]),
-                  chip_text, font=chip_font, fill=255)
+                 truncate=True, vertical_center=True, center=True)
     y = banner_h + area(.02)
     title_h = area(.115)
     title_used = _draw_fitted(draw, data.name, (margin, y, inner, title_h),
                  start=74 * scale, bold=True, center=True, truncate=True,
                  minimum=32 * scale)
     # Advance by the actual text height, avoiding a blank second line for short names.
-    y += title_used + area(.015)
+    y += title_used + area(.012)
+    if data.category:
+        group_used = _draw_fitted(draw, data.category.upper(),
+                     (margin, y, inner, area(.04)), start=30 * scale,
+                     bold=True, center=True, max_lines=1, truncate=True)
+        y += group_used + area(.012)
     rule()
     y += area(.01)
 
@@ -375,9 +353,9 @@ def render_label(data, size):
     qr.add_data(data.code)
     qr.make(fit=True)
     qr_image = qr.make_image(fill_color='black', back_color='white').convert('L')
-    qr_area_h = area(.225)
+    qr_area_h = area(.285)
     gap = max(8, round(width * .025))
-    qr_width = max(round(inner * .48), qr_image.width * 3)
+    qr_width = max(round(inner * .56), qr_image.width * 3)
     qr_scale = min(qr_width, qr_area_h) // qr_image.width
     if qr_scale < 3 or inner - qr_width - gap < inner * .3:
         raise ValueError('Grocycode is too dense for this roll; use a larger label')

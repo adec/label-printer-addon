@@ -1,3 +1,9 @@
+## 0.16.4 — Location banner and larger QR
+
+- Return the location to a full-width, centred banner.
+- Show the product group as a bold subtitle beneath the product name.
+- Enlarge the QR area while retaining integer modules and quiet zones.
+
 ## 0.16.3 — Product group first
 
 - Show the product group prominently in the banner, centred vertically.
