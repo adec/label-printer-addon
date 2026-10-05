@@ -1,3 +1,9 @@
+## 0.16.2 — More compact, readable Grocy labels
+
+- Place the product ID and QR code beside each other.
+- Size the product-name section to its actual text height, removing the blank space beneath single-line names.
+- Keep native QR modules and scan quiet zones intact.
+
 ## 0.16.1 — Grocy categories and date semantics
 
 - Use the product group name instead of a static category chip.

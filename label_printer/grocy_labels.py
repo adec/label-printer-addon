@@ -295,6 +295,7 @@ def _draw_fitted(draw, text, box, *, start, bold=False, fill=0,
         offset = (width - draw.textlength(line, font=font)) / 2 if center else 0
         top = draw.textbbox((0, 0), line, font=font)[1]
         draw.text((x + offset, y + index * line_height - top), line, font=font, fill=fill)
+    return (len(lines) - 1) * line_height + draw.textbbox((0, 0), lines[-1], font=font)[3] - top
 
 
 def render_label(data, size):
@@ -339,18 +340,13 @@ def render_label(data, size):
                      max_lines=1, truncate=True)
     y = banner_h + area(.02)
     title_h = area(.115)
-    _draw_fitted(draw, data.name, (margin, y, inner, title_h),
+    title_used = _draw_fitted(draw, data.name, (margin, y, inner, title_h),
                  start=74 * scale, bold=True, center=True, truncate=True,
                  minimum=32 * scale)
-    y += title_h + area(.015)
+    # Advance by the actual text height, avoiding a blank second line for short names.
+    y += title_used + area(.015)
     rule()
     y += area(.01)
-    _draw_fitted(draw, data.code_heading, (margin, y, inner, area(.025)),
-                 start=20 * scale, bold=True, center=True, max_lines=1)
-    y += area(.03)
-    _draw_fitted(draw, data.display_code, (margin, y, inner, area(.075)),
-                 start=84 * scale, bold=True, center=True, max_lines=2)
-    y += area(.075)
 
     # Integer QR modules and four-module quiet zones; never stretch a QR image.
     qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M,
@@ -359,12 +355,23 @@ def render_label(data, size):
     qr.make(fit=True)
     qr_image = qr.make_image(fill_color='black', back_color='white').convert('L')
     qr_area_h = area(.225)
-    qr_scale = min(inner, qr_area_h) // qr_image.width
-    if qr_scale < 3:
+    gap = max(8, round(width * .025))
+    qr_width = max(round(inner * .48), qr_image.width * 3)
+    qr_scale = min(qr_width, qr_area_h) // qr_image.width
+    if qr_scale < 3 or inner - qr_width - gap < inner * .3:
         raise ValueError('Grocycode is too dense for this roll; use a larger label')
     qr_image = qr_image.resize((qr_image.width * qr_scale, qr_image.height * qr_scale),
                                Image.Resampling.NEAREST)
-    image.paste(qr_image, ((width - qr_image.width) // 2,
+    text_width = inner - qr_width - gap
+    heading_h = area(.025)
+    code_h = area(.075)
+    text_y = y + (qr_area_h - heading_h - area(.01) - code_h) / 2
+    _draw_fitted(draw, data.code_heading, (margin, text_y, text_width, heading_h),
+                 start=20 * scale, bold=True, center=True, max_lines=1)
+    _draw_fitted(draw, data.display_code,
+                 (margin, text_y + heading_h + area(.01), text_width, code_h),
+                 start=84 * scale, bold=True, center=True, max_lines=2)
+    image.paste(qr_image, (width - margin - qr_width + (qr_width - qr_image.width) // 2,
                            y + (qr_area_h - qr_image.height) // 2))
     y += qr_area_h + area(.005)
     rule()
