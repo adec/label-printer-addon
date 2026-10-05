@@ -1,10 +1,18 @@
+# Label Printer — Grocy Edition
+
+This edition adds native Grocy food labels to the Brother-enabled printer fork.
+Use `/grocy/print` for labels and `/grocy/image` for PNG previews. Configure
+`grocy_url` and `grocy_api_key` in the add-on for category/API enrichment.
+
+[Grocy setup instructions](https://github.com/adec/label-printer-addon/blob/grocy-labels/GROCY.md)
+
 ## Brother QL-1110NWB over Wi-Fi or Ethernet
 
 This fork adds a `brother` printer to the existing HTTP API. It renders
 PNG/JPEG/PDF to Brother raster commands at 300 dpi and sends them directly
 to the printer's TCP port (default 9100). USB DYMO/Zebra printing still uses CUPS.
 
-Install this repository (`https://github.com/adec/label-printer-addon`) in the
+Install this repository (`https://github.com/adec/label-printer-addon#grocy-labels`) in the
 Home Assistant add-on store, install or rebuild Label Printer, and set:
 
 ```yaml

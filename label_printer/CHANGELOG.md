@@ -1,3 +1,24 @@
+## 0.16.1 — Grocy categories and date semantics
+
+- Use the product group name instead of a static category chip.
+- Print BEST BEFORE or EXPIRY DATE from product due_type; use DUE DATE if unknown.
+- Add optional grocy_url / grocy_api_key settings for richer metadata lookup.
+- Resolve missing product details, product groups and actual stock locations.
+- Preserve batch-specific scan codes, dates and quantities; never use aggregate dates.
+- Return 502 and prevent printing if a configured API lookup fails.
+- Add API-header/subpath, identity, date-type and category lookup regression tests.
+
+## 0.16.0 — Grocy food labels
+
+- Add `/grocy/print` for Grocy's native JSON and form label-print webhooks.
+- Add `/grocy/image` for PNG previews without printing.
+- Render a location banner, large product name and ID, scannable stock-specific
+  Grocycode, stored date, prominent best-before panel and optional contents/quantity.
+- Use the existing Brother QL-1110NWB network transport and loaded-roll geometry;
+  reject unreadable media and roll swaps instead of silently fitting a wrong size.
+- Preserve existing Fridge Assistant PNG/PDF printing and roll detection.
+- Add scan-decode, native-size, webhook, validation and HTTP-to-raster TCP tests.
+
 ## 0.15.1 — Brother web status fallback
 
 - Read the printer's HTTP status page when TCP raster status replies are unavailable.

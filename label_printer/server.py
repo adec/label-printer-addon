@@ -3549,6 +3549,24 @@ def _warm_native_px(entries: list[dict]) -> None:
         print(f"[geometry] {name}: {media} -> native_px {px}", flush=True)
 
 
+from grocy_labels import GrocyEnricher, register_grocy_routes
+
+
+def _grocy_printer():
+    if not _configured("brother"):
+        raise RuntimeError("Set brother_host in the add-on Configuration first")
+    return _printer_entry("brother")
+
+
+def _grocy_enrich(payload):
+    return GrocyEnricher.from_options(_addon_options()).enrich(payload)
+
+
+register_grocy_routes(app, _grocy_printer,
+                      lambda *args, **kwargs: _print_bytes(*args, **kwargs),
+                      enrich=lambda payload: _grocy_enrich(payload))
+
+
 if __name__ == "__main__":
     _journal_load()
     _stats_load()
