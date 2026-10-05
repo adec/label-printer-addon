@@ -47,7 +47,7 @@ class GrocyLabelTests(unittest.TestCase):
         self.assertEqual(data.location, 'Freezer')
 
     def test_product_date_type_overrides_static_heading(self):
-        for due_type, heading in ((1, 'BEST BEFORE'), ('2', 'EXPIRY DATE')):
+        for due_type, heading in ((1, 'BEST BEFORE'), ('2', 'EXPIRES')):
             payload = dict(PAYLOAD, date_label='EAT BEFORE', details={
                 'product': {'id': '42', 'due_type': due_type},
                 'product_group': {'name': 'Prepared meals'}})
@@ -67,7 +67,7 @@ class GrocyLabelTests(unittest.TestCase):
             return {'id': '7', 'name': 'Prepared meals'}
         rich = GrocyEnricher(get).enrich(PAYLOAD)
         data = label_data(rich)
-        self.assertEqual(data.date_label, 'EXPIRY DATE')
+        self.assertEqual(data.date_label, 'EXPIRES')
         self.assertEqual(data.category, 'Prepared meals')
         self.assertEqual(data.due, '12 Dec 2026')
         self.assertEqual(data.quantity, '4 portions')
@@ -121,7 +121,7 @@ class GrocyLabelTests(unittest.TestCase):
                 'grocy_url': f'http://127.0.0.1:{http.server_port}/grocy',
                 'grocy_api_key': 'test-key'})
             data = label_data(reader.enrich(PAYLOAD))
-            self.assertEqual((data.category, data.date_label), ('Prepared meals', 'EXPIRY DATE'))
+            self.assertEqual((data.category, data.date_label), ('Prepared meals', 'EXPIRES'))
             self.assertEqual(calls, [('/grocy/api/stock/products/42', 'test-key'),
                                      ('/grocy/api/objects/product_groups/7', 'test-key')])
         finally:
@@ -219,10 +219,81 @@ class GrocyLabelTests(unittest.TestCase):
             send.assert_called_once()
 
     def test_unconfigured_printer_is_actionable_json(self):
-        with patch.object(server, '_addon_options', return_value={}):
+        with patch.object(server, '_addon_options', return_value={}), \
+             patch.object(server, '_queues', return_value=[]):
             response = server.app.test_client().post('/grocy/print', json=PAYLOAD)
             self.assertEqual(response.status_code, 503)
-            self.assertIn('brother_host', response.json['detail'])
+            self.assertIn('/printers', response.json['detail'])
+
+    def test_cups_printers_receive_native_png_and_selected_queue(self):
+        for name, dpi, size in (('dymo', 300, (696, 1109)),
+                                 ('zebra', 203, (812, 1218))):
+            entry = dict(geometry(size, 'Custom.62x100mm'), name=name,
+                         kind=name, dpi=dpi, accepts=['png'])
+            with self.subTest(name=name), \
+                 patch.object(server, '_queues', return_value=['brother', name]), \
+                 patch.object(server, '_printer_entry', return_value=entry) as discover, \
+                 patch.object(server, '_print_bytes', return_value={'ok': True}) as send:
+                response = server.app.test_client().post(
+                    '/grocy/print?printer=' + name, json=PAYLOAD)
+                self.assertEqual(response.status_code, 200)
+                discover.assert_called_once_with(name)
+                args = send.call_args.args
+                self.assertEqual(args[1:], ('Custom.62x100mm', 1, name, 'png'))
+                image = Image.open(io.BytesIO(args[0]))
+                self.assertEqual(image.size, size)
+                self.assertAlmostEqual(image.info['dpi'][0], dpi, places=1)
+                self.assertEqual(zxingcpp.read_barcodes(image)[0].text, PAYLOAD['grocycode'])
+
+    def test_default_cups_queue_without_brother_and_payload_selection(self):
+        entry = dict(geometry(), name='dymo', kind='dymo', accepts=['png'])
+        with patch.object(server, '_addon_options', return_value={}), \
+             patch.object(server, '_queues', return_value=['dymo']), \
+             patch.object(server, '_default_queue', return_value='dymo'), \
+             patch.object(server, '_printer_entry', return_value=entry) as discover:
+            client = server.app.test_client()
+            for payload in (PAYLOAD, dict(PAYLOAD, printer='dymo')):
+                self.assertEqual(client.post('/grocy/image', json=payload).status_code, 200)
+            self.assertEqual(discover.call_args.args, ('dymo',))
+
+    def test_unknown_and_unsupported_printers_never_submit(self):
+        with patch.object(server, '_queues', return_value=['brother']), \
+             patch.object(server, '_print_bytes') as send:
+            response = server.app.test_client().post('/grocy/print?printer=missing', json=PAYLOAD)
+            self.assertEqual(response.status_code, 503)
+            send.assert_not_called()
+        entry = dict(geometry(), name='raw', kind='unknown', accepts=[])
+        with patch.object(server, '_printer_entry', return_value=entry), \
+             patch.object(server, '_print_bytes') as send:
+            self.assertEqual(server.app.test_client().post('/grocy/print', json=PAYLOAD).status_code, 503)
+            send.assert_not_called()
+
+    def test_raw_zebra_bitmap_decodes_and_preview_remains_png(self):
+        import re
+        from PIL import ImageOps
+        size = (812, 1218)
+        entry = dict(geometry(size, 'Custom.102x152mm'), name='zebra',
+                     kind='zebra', dpi=203, accepts=['zpl'])
+        with patch.object(server, '_queues', return_value=['zebra']), \
+             patch.object(server, '_printer_entry', return_value=entry), \
+             patch.object(server, '_print_bytes', return_value={'ok': True}) as send:
+            client = server.app.test_client()
+            response = client.post('/grocy/print?printer=zebra', json=PAYLOAD)
+            self.assertEqual(response.status_code, 200)
+            zpl, media, copies, name, fmt = send.call_args.args
+            self.assertEqual((name, fmt), ('zebra', 'zpl'))
+            match = re.search(rb'\^GFA,(\d+),(\d+),(\d+),([0-9A-F]+)\^FS', zpl)
+            self.assertIsNotNone(match)
+            total, used, stride = map(int, match.groups()[:3])
+            self.assertEqual((total, used, stride), (102 * 1218, 102 * 1218, 102))
+            bitmap = Image.frombytes('1', size, bytes.fromhex(match[4].decode()))
+            image = ImageOps.invert(bitmap.convert('L'))
+            self.assertEqual(zxingcpp.read_barcodes(image)[0].text, PAYLOAD['grocycode'])
+            send.reset_mock()
+            response = client.post('/grocy/image?printer=zebra', json=PAYLOAD)
+            self.assertEqual(response.mimetype, 'image/png')
+            self.assertEqual(Image.open(io.BytesIO(response.data)).size, size)
+            send.assert_not_called()
 
     def test_nested_php_form_matches_json(self):
         with patch.object(server, '_printer_entry', return_value=geometry()):
