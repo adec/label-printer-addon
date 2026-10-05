@@ -22,6 +22,28 @@ IP address in DHCP, or use a stable hostname. Home Assistant must be able to
 reach the printer on TCP 9100, including across VLANs if applicable. Restart
 the add-on after configuration changes.
 
+### Automatic roll detection (v0.15.0)
+
+Set `brother_label: "auto"`, save and restart the add-on. It sends Brother's
+`ESC i S` status request over TCP 9100 and reads the 32-byte reply. Supported
+rectangular die-cut rolls are matched by width and length; continuous rolls
+are matched by width. For continuous tape, `brother_length_mm` still sets the
+cut length: the printer cannot infer the length you want or remaining tape.
+
+`GET /printers` exposes the detected `media`, `native_px` and a `detection`
+object with `width_mm`, `length_mm`, `media_type`, `no_media`, `error_bytes`
+and `raw_status`. Status replies are cached for five seconds for discovery;
+auto-mode print jobs always query again before conversion. Queries and print
+streams are serialized. Swapping supported rolls needs no configuration change.
+
+Auto mode refuses printing if status is unavailable, the roll is unsupported,
+no media is present, or the printer reports an error. Check `detection` for
+details. If your printer/network does not return status replies, select the roll
+manually to retain the previously working printing path. Detection sends no
+feed or cut commands. A status reply does not confirm physical completion of a
+print job. Status protocol tests pass; auto detection still needs verification
+on the physical printer.
+
 Select continuous rolls by width (`12`, `29`, `38`, `50`, `54`, `62`, `102`,
 `103`), or rectangular die-cut rolls by size (for example `62x100`, `102x51`,
 `102x152`, `103x164`). Continuous length is 26–3000 mm. The driver cannot
@@ -40,20 +62,18 @@ Use `loaded.native_px` from `/printers` as the design canvas. It is the
 ratio, `crop` keeps one pixel per dot and crops/pads, and `reject` returns 422
 unless dimensions match. Transparent pixels become white. PDFs use Ghostscript
 and print all pages. Copies are clamped to the service's existing maximum.
-Only the configured loaded roll can be used; raw ZPL is rejected for Brother.
+Only the configured or automatically detected loaded roll can be used; raw ZPL is rejected for Brother.
 
 A successful Brother response has `ok: true`, `submitted: true`, and
 `printed: false`: TCP transmission does not confirm paper movement, roll
 compatibility, or physical completion. `connected` means port 9100 was reachable,
-not that labels are loaded. No Brother paper-out or roll-recognition status is
-available yet. History and roll counters estimate submitted jobs. If a network
+not that labels are loaded. Auto mode reports the roll dimensions and printer status bytes. History and roll counters estimate submitted jobs. If a network
 send fails partway through, check the printer before retrying to avoid duplicates.
 
 The Brother dependency is pinned to upstream commit
 `9eb7b69eac9778e5a569fd896768c392e5c7c7e7` of
 [brother_ql_next](https://github.com/LunarEclipse363/brother_ql_next).
-This driver includes a QL-1110NWB model definition; physical output has not yet
-been validated on this fork's target printer. The container build also needs
+This driver includes a QL-1110NWB model definition; manual printing has been confirmed on the target QL-1110NWB. The container build also needs
 validation on Home Assistant; no Docker runtime was available in development.
 
 

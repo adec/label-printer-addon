@@ -1,3 +1,11 @@
+## 0.15.0 — Automatic Brother roll detection
+
+- Add opt-in brother_label: auto using the Brother TCP raster status request.
+- Detect supported roll widths and rectangular die-cut lengths; keep continuous cut length configurable.
+- Expose detection details through /printers and /health; refresh detection before printing.
+- Handle fragmented TCP replies, unsolicited status notifications, missing/unsupported rolls and printer errors.
+- Keep manual printing available when the printer does not return network status.
+
 ## 0.14.1 — Brother self-test configuration errors
 
 - Return an actionable JSON error when Brother self-test is requested before brother_host is saved, instead of crashing on an empty label name.

@@ -10,7 +10,7 @@
 # queue. The ONLY thing to configure is which label roll is loaded per
 # printer — that mirrors the physical roll, so it lives here (and only here).
 name: "Label Printer"
-version: "0.14.1"
+version: "0.15.0"
 slug: "label_printer"
 description: >-
   Print PNG/PDF labels on Brother QL-1110NWB over the network and USB label printers. Auto-detects DYMO
@@ -71,7 +71,7 @@ options:
 schema:
   brother_host: "str?"
   brother_port: "port"
-  brother_label: "list(12|29|38|50|54|62|102|103|17x54|17x87|29x42|29x90|39x90|39x48|60x86|62x100|102x51|102x152|103x164)"
+  brother_label: "list(auto|12|29|38|50|54|62|102|103|17x54|17x87|29x42|29x90|39x90|39x48|60x86|62x100|102x51|102x152|103x164)"
   brother_length_mm: "int(26,3000)"
   brother_cut: "bool"
   brother_size_mismatch: "list(scale|crop|reject)"

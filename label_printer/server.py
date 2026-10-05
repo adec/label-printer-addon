@@ -515,10 +515,15 @@ def _printer_entry(name: str, default_name: str | None = None) -> dict:
     cfg = _configured(name)
     if name == "brother":
         opts = _addon_options()
-        loaded = brother_network.media_entry(cfg["media"], opts)
+        detection = brother_network.status(cfg) if cfg["media"] == "auto" else None
+        label = detection.get("media") if detection else cfg["media"]
+        loaded = (brother_network.media_entry(label, opts) if label else
+                  {"media": "auto", "label": "Brother DK — roll detection unavailable",
+                   "native_px": None, "printable": None})
         mode, align = _size_policy(name)
         return {"name": name, "kind": "brother", "model": cfg["model"],
-                "connected": brother_network.connected(cfg), "dpi": 300,
+                "connected": detection["connected"] if detection else brother_network.connected(cfg), "dpi": 300,
+                "detection": detection, "configured_media": cfg["media"],
                 "transport": "tcp", "default": name == (default_name or _default_queue()),
                 **loaded, "loaded": loaded, "alr": None, "roll": _roll_state(name),
                 "supported": [brother_network.media_entry(m, opts) for m in brother_network.LABELS],
@@ -2238,6 +2243,9 @@ def selftest():
                                 "printer": printer,
                                 "hint": "Set brother_host in the add-on Configuration, save and restart. Set brother_label to match the loaded roll."}), 503
             brother_network.size(cfg["media"], _addon_options())
+        except brother_network.MediaDetectionError as exc:
+            return jsonify({"ok": False, "error": "media_detection_failed",
+                            "printer": printer, "detail": str(exc)}), 503
         except (ValueError, TypeError, KeyError) as exc:
             return jsonify({"ok": False, "error": "invalid_configuration",
                             "printer": printer, "detail": str(exc),
