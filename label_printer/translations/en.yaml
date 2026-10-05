@@ -1,4 +1,10 @@
 configuration:
+  grocy_url:
+    name: "Grocy — base URL"
+    description: "Reachable Grocy address, including a subpath if used. Resolves product categories and missing date types."
+  grocy_api_key:
+    name: "Grocy — API key"
+    description: "API key from Grocy settings. Used only for reading label metadata."
   brother_host:
     name: "Brother — IP address or hostname"
     description: "QL-1110NWB on Wi-Fi/Ethernet. Leave empty to disable."
