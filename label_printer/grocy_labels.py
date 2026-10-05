@@ -194,7 +194,7 @@ def label_data(payload):
     stock = _object(payload.get('stock_entry'))
     product = _object(details.get('product'))
     group = _object(details.get('product_group'))
-    date_label = { '1': 'BEST BEFORE', '2': 'EXPIRY DATE' }.get(
+    date_label = { '1': 'BEST BEFORE', '2': 'EXPIRES' }.get(
         str(product.get('due_type', payload.get('due_type'))), 'DUE DATE')
     location = _object(details.get('location'))
     stock_location = stock.get('location_id')
@@ -377,9 +377,9 @@ def render_label(data, size):
     y += area(.012)
 
     if data.stored:
-        _draw_fitted(draw, 'STORED', (margin, y, inner, area(.021)),
-                     start=21 * scale, bold=True, max_lines=1)
-        y += area(.027)
+        _draw_fitted(draw, 'STORED', (margin, y, inner, area(.029)),
+                     start=30 * scale, bold=True, max_lines=1)
+        y += area(.035)
         _draw_fitted(draw, data.stored, (margin, y, inner, area(.039)),
                      start=38 * scale, bold=True, max_lines=1)
         y += area(.049)
@@ -388,8 +388,8 @@ def render_label(data, size):
         draw.rounded_rectangle((0, y, width - 1, y + panel_h),
                                radius=max(6, round(16 * scale)), fill=0)
         _draw_fitted(draw, data.date_label.upper(),
-                     (margin, y + panel_h * .13, inner, panel_h * .2),
-                     start=22 * scale, bold=True, fill=255, max_lines=1)
+                     (margin, y + panel_h * .12, inner, panel_h * .25),
+                     start=30 * scale, bold=True, fill=255, max_lines=1)
         _draw_fitted(draw, data.due, (margin, y + panel_h * .42, inner, panel_h * .45),
                      start=48 * scale, bold=True, fill=255, max_lines=2)
         y += panel_h + area(.02)
@@ -436,6 +436,19 @@ def _request_payload():
     return payload
 
 
+def zebra_raster(png):
+    """Encode the finished native-size monochrome raster as uncompressed ZPL."""
+    with Image.open(BytesIO(png)) as image:
+        width, height = image.size
+        # ZPL bits are 1 for black; Pillow mode 1 uses 1 for white.
+        bitmap = image.convert('L').point(lambda v: 255 if v < 128 else 0, mode='1')
+        raster = bitmap.tobytes()
+    row_bytes = (width + 7) // 8
+    total = row_bytes * height
+    return (f'^XA^PW{width}^LL{height}^LH0,0^FO0,0'
+            f'^GFA,{total},{total},{row_bytes},{raster.hex().upper()}^FS^XZ').encode('ascii')
+
+
 def register_grocy_routes(app, get_printer, send_image, enrich=None):
     """Register routes using existing printer discovery and journalled transport."""
     blueprint = Blueprint('grocy', __name__)
@@ -451,25 +464,32 @@ def register_grocy_routes(app, get_printer, send_image, enrich=None):
         copies = int(copies)
         if not 1 <= copies <= 10:
             raise ValueError('copies must be an integer from 1 to 10')
-        entry = get_printer()
+        requested = request.args.get('printer') or payload.get('printer')
+        if requested is not None and (not isinstance(requested, str) or not requested.strip()):
+            raise ValueError('printer must be a queue name from /printers')
+        entry = get_printer(requested.strip() if requested else None)
         detection = entry.get('detection') or {}
         if (not entry.get('connected') or detection.get('no_media') or
                 detection.get('printer_error') or any(detection.get('error_bytes', []))):
-            raise RuntimeError('Brother printer is not ready; check /printers')
+            raise RuntimeError('Printer is not ready; check /printers')
         loaded = entry.get('loaded') or entry
         size = loaded.get('native_px')
         media = loaded.get('media')
         if not size or not media or media == 'auto':
             raise RuntimeError('No supported label roll detected; check /printers')
+        accepts = entry.get('accepts', ['png'])
+        if 'png' not in accepts and not (entry.get('kind') == 'zebra' and 'zpl' in accepts):
+            raise RuntimeError('Printer needs an image driver or Zebra ZPL support')
+        dpi = entry.get('dpi', 300)
         image = render_label(data, tuple(size))
         buffer = BytesIO()
-        image.save(buffer, format='PNG', dpi=(300, 300))
-        return buffer.getvalue(), media, copies
+        image.save(buffer, format='PNG', dpi=(dpi, dpi))
+        return buffer.getvalue(), media, copies, entry
 
     @blueprint.route('/grocy/image', methods=['GET', 'POST'])
     def preview():
         try:
-            png, _, _ = prepare()
+            png, _, _, _ = prepare()
             return Response(png, mimetype='image/png', headers={'Cache-Control': 'no-store'})
         except (ValueError, TypeError) as exc:
             return jsonify(ok=False, error='invalid_label', detail=str(exc)), 422
@@ -481,10 +501,15 @@ def register_grocy_routes(app, get_printer, send_image, enrich=None):
     @blueprint.route('/grocy/print', methods=['POST'])
     def print_label():
         try:
-            png, media, copies = prepare()
+            png, media, copies, entry = prepare()
             # Explicit detected media prevents printing if the roll was swapped
             # between discovery and transport preflight. Never automatically retry.
-            result = send_image(png, media, copies, 'brother', 'png', source='grocy')
+            # Raw Zebra queues need printer-language raster data, not a PNG.
+            fmt = 'png'
+            if 'png' not in entry.get('accepts', ['png']):
+                png = zebra_raster(png)
+                fmt = 'zpl'
+            result = send_image(png, media, copies, entry['name'], fmt, source='grocy')
             code = 200 if result.get('ok') else (
                 422 if result.get('error') in ('invalid_media', 'size_mismatch', 'bad_image') else 503)
             return jsonify(result), code

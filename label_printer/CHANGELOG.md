@@ -1,3 +1,16 @@
+## 0.16.5 — Grocy labels for DYMO and Zebra
+
+**DYMO and Zebra Grocy printing is experimental: software-tested only, not
+verified on physical printers.** Brother remains the physically tested transport.
+
+- Use EXPIRES for expiry-date labels.
+- Enlarge the stored and due-date headings for readability.
+- Select a printer with the printer query parameter or payload field.
+- Use the default CUPS queue when Brother is not configured.
+- Render at the selected printer native dimensions and DPI.
+- Send PNG to image-capable queues and native raster ZPL to raw Zebra queues.
+- Keep the existing Brother default, readiness checks and print journal.
+
 ## 0.16.4 — Location banner and larger QR
 
 - Return the location to a full-width, centred banner.
