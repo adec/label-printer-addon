@@ -8,6 +8,8 @@ python3 -m venv .venv
 
 The suite generates real Brother raster commands for all offered label sizes,
 sends bytes to a local TCP receiver, and exercises discovery, printing, self-test,
-PDF page conversion (with rasterization mocked), size policies and failures.
+PDF page conversion (with rasterization mocked), size policies and failures. Detection tests use actual TCP status replies split
+across writes, unsolicited notifications, cache refresh, roll swaps and errors. HTTP tests cover continuous/die-cut parsing,
+source fallback, missing media and printer-not-ready handling.
 It does not send any data to a physical printer. A Home Assistant container build
 and physical PNG/PDF print test are still required for hardware validation.

@@ -18,8 +18,20 @@ def png(size=(1164, 1660)):
     return buf.getvalue()
 
 
+def status_frame(width=62, length=0, kind=10, status_type=0, errors=(0, 0)):
+    frame = bytearray(32)
+    frame[:6] = b'\x80\x20\x42\x34\x44\x30'
+    frame[8:12] = bytes((*errors, width, kind))
+    frame[17], frame[18] = length, status_type
+    return bytes(frame)
+
+
 class BrotherTests(unittest.TestCase):
     def setUp(self):
+        brother._STATUS_CACHE.clear()
+        web = patch.object(brother, 'web_status', side_effect=OSError('HTTP unavailable in test'))
+        web.start()
+        self.addCleanup(web.stop)
         self.opts = {'brother_host': '127.0.0.1', 'brother_label': '102x152'}
 
     def test_geometry_all_labels_and_continuous_length(self):
@@ -110,6 +122,114 @@ class BrotherTests(unittest.TestCase):
             self.assertEqual(reply.status_code, 200)
             self.assertTrue(reply.get_json()['submitted'])
             connect.return_value.__enter__.return_value.sendall.assert_called_once()
+
+    def test_parse_detected_rolls_and_missing_media(self):
+        self.assertEqual(brother.parse_status(status_frame())['media'], '62')
+        for length in (152, 153):
+            self.assertEqual(brother.parse_status(status_frame(102, length, 11))['media'], '102x152')
+        self.assertEqual(brother.parse_status(status_frame(104, 164, 11))['media'], '103x164')
+        for frame in (status_frame(0, 0, 0), status_frame(errors=(1, 0))):
+            self.assertTrue(brother.parse_status(frame)['no_media'])
+            self.assertIsNone(brother.parse_status(frame)['media'])
+        self.assertIsNone(brother.parse_status(status_frame(99))['media'])
+        with self.assertRaises(ValueError):
+            brother.parse_status(b'invalid')
+
+    def test_tcp_status_fragments_notifications_and_cache(self):
+        listener = socket.socket()
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(1)
+        cfg = brother.config(dict(self.opts, brother_port=listener.getsockname()[1]))
+        requests = []
+        def receive():
+            conn, _ = listener.accept()
+            with conn:
+                conn.settimeout(3)
+                requests.append(conn.recv(3))
+                payload = status_frame(status_type=5) + status_frame()
+                for chunk in (payload[:4], payload[4:39], payload[39:]):
+                    conn.sendall(chunk)
+            listener.close()
+        worker = threading.Thread(target=receive)
+        worker.start()
+        detected = brother.status(cfg)
+        worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(requests, [b'\x1b\x69\x53'])
+        self.assertEqual(detected['media'], '62')
+        # Listener is now closed; success here proves cache reuse.
+        self.assertEqual(brother.status(cfg), detected)
+        self.assertFalse(brother.status(cfg, refresh=True)['connected'])
+
+    def test_auto_discovery_and_roll_swap_before_print(self):
+        opts = dict(self.opts, brother_label='auto')
+        with patch.object(server, '_addon_options', return_value=opts), \
+             patch.object(server, '_roll_state', return_value={}), \
+             patch.object(brother, 'status', return_value=brother.parse_status(status_frame())) as query:
+            entry = server._printer_entry('brother', 'brother')
+            self.assertEqual(entry['media'], '62')
+            self.assertEqual(entry['native_px'], [696, 1181])
+            self.assertEqual(entry['detection']['media_type'], 'continuous')
+            query.return_value = brother.parse_status(status_frame(102, 153, 11))
+            with patch.object(brother.socket, 'create_connection'):
+                result = brother.print_job(png(), 'png', 'auto', 1, opts, lambda *_: None, [])
+            self.assertTrue(result['submitted'])
+            self.assertEqual(result['media'], '102x152')
+            query.assert_called_with(brother.config(opts), refresh=True)
+
+    def test_auto_unavailable_unknown_and_printer_errors(self):
+        opts = dict(self.opts, brother_label='auto')
+        for detection in ({'connected': True, 'media': None, 'error': 'timeout'},
+                          brother.parse_status(status_frame(99)),
+                          brother.parse_status(status_frame(0, 0, 0)),
+                          brother.parse_status(status_frame(errors=(0, 16)))):
+            with self.subTest(detection=detection), \
+                 patch.object(brother, 'status', return_value=detection), \
+                 patch.object(brother.socket, 'create_connection') as connect:
+                result = brother.print_job(png(), 'png', 'auto', 1, opts, lambda *_: None, [])
+                self.assertEqual(result['error'], 'media_detection_failed')
+                connect.assert_not_called()
+                with patch.object(server, '_addon_options', return_value=opts), \
+                     patch.object(server, '_roll_state', return_value={}):
+                    reply = server.app.test_client().post('/selftest?printer=brother')
+                    self.assertEqual(reply.status_code, 503)
+                    self.assertEqual(reply.get_json()['error'], 'media_detection_failed')
+                    entry = server._printer_entry('brother', 'brother')
+                    if not detection.get('media'):
+                        self.assertIsNone(entry['native_px'])
+
+    def test_web_status_continuous_die_cut_and_no_media(self):
+        def page(media, state='READY', roll='Not Empty'):
+            return f'<dl><dt>Device&#32;Status</dt><dd><span>{state}</span></dd><dt>Media Status</dt><dd>{roll}</dd><dt>Media Type</dt><dd>{media}</dd></dl>'
+        detected = brother.parse_web_status(page('62mm / 2.4&quot;'))
+        self.assertEqual(detected['media'], '62')
+        self.assertEqual(detected['source'], 'http')
+        self.assertFalse(detected['printer_error'])
+        self.assertEqual(brother.parse_web_status(page('102mm x 152mm'))['media'], '102x152')
+        self.assertTrue(brother.parse_web_status(page('62mm', roll='Empty'))['no_media'])
+        self.assertTrue(brother.parse_web_status(page('62mm', state='COVER OPEN'))['printer_error'])
+        with self.assertRaises(ValueError):
+            brother.parse_web_status('<html>Login required</html>')
+
+    def test_tcp_timeout_uses_web_fallback_and_prefers_it_on_refresh(self):
+        cfg = brother.config(dict(self.opts, brother_label='auto'))
+        reply = brother.parse_web_status('<dt>Media Type</dt><dd>62mm / 2.4&quot;</dd><dt>Device Status</dt><dd>READY</dd>')
+        with patch.object(brother.socket, 'create_connection', side_effect=TimeoutError('no reply')) as tcp, \
+             patch.object(brother, 'web_status', return_value=reply) as web:
+            self.assertEqual(brother.status(cfg, refresh=True)['media'], '62')
+            self.assertEqual(brother.status(cfg, refresh=True)['source'], 'http')
+            self.assertEqual(tcp.call_count, 1)
+            self.assertEqual(web.call_count, 2)
+            self.assertEqual(brother.detected_label(dict(self.opts, brother_label='auto')), '62')
+
+    def test_web_printer_error_blocks_auto_print(self):
+        detected = brother.parse_web_status('<dt>Media Type</dt><dd>62mm</dd><dt>Device Status</dt><dd>COVER OPEN</dd>')
+        with patch.object(brother, 'status', return_value=detected), \
+             patch.object(brother.socket, 'create_connection') as connect:
+            result = brother.print_job(png(), 'png', 'auto', 1,
+                dict(self.opts, brother_label='auto'), lambda *_: None, [])
+            self.assertEqual(result['error'], 'media_detection_failed')
+            connect.assert_not_called()
 
     def test_api_discovery_default_and_print(self):
         with patch.object(server, '_addon_options', return_value=self.opts), \
