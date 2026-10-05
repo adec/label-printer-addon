@@ -1,6 +1,6 @@
-# Grocy food labels on the Brother QL-1110NWB
+# Grocy food labels on Brother, DYMO and Zebra
 
-Version 0.16.1 adds label rendering to the existing printer add-on. Grocy can run
+Version 0.16.5 adds label rendering to the existing printer add-on. Grocy can run
 in Docker on your Ubuntu/Proxmox host and call the add-on over the LAN. Fridge
 Assistant continues to use the existing `/print` endpoint. Both use the same
 Brother network driver and loaded-roll settings.
@@ -52,6 +52,34 @@ return an error rather than printing unreadable output. The prepared examples
 include 62 × 100, 62 × 29 and 29 × 90 mm media; confirm your exact DK roll with a
 preview and test print. Optional contents are omitted when space is insufficient.
 
+## Select a printer
+
+Version 0.16.5 supports the existing DYMO and Zebra queues as well as Brother.
+**DYMO and Zebra Grocy support is experimental and has not been tested on
+physical devices.** Automated checks cover queue selection, native PNG dimensions
+and DPI, QR decoding, and raw Zebra raster encoding. They cannot confirm physical
+print quality, media alignment or device behaviour.
+
+Use the exact queue name returned by `GET /printers`, for example:
+
+```text
+http://HOME_ASSISTANT_LAN_IP:8000/grocy/print?printer=dymo
+http://HOME_ASSISTANT_LAN_IP:8000/grocy/image?printer=zebra
+```
+
+The same `printer` field can be supplied in JSON or form data; the URL takes
+precedence. Without a selection, a configured Brother remains the default;
+otherwise the add-on uses its effective default CUPS queue. An unavailable
+selection fails rather than falling back to another printer.
+
+DYMO and image-capable Zebra queues receive PNG at their native label dimensions
+and DPI. Raw Zebra queues receive monochrome raster ZPL. Preview always returns
+PNG and never prints. Queue media must be configured correctly; tiny labels,
+unknown dimensions and raw queues without Zebra support are rejected. Existing
+CUPS readiness checks, size policy and print journal still apply. Brother retains
+its roll detection and network transport. Hardware testing is still required for
+these new Grocy paths on DYMO and Zebra.
+
 ## Configure Docker Grocy
 
 Edit Grocy's persistent `data/config.php` through the volume mounted into your
@@ -87,7 +115,7 @@ The category chip now uses Grocy's **product group name**. A product without a
 product group has no chip; the old static `category: DISHES` parameter is ignored.
 
 Grocy keeps the date meaning on `details.product.due_type`: `1` prints
-**BEST BEFORE**, `2` prints **EXPIRY DATE**. The underlying stock date field is
+**BEST BEFORE**, `2` prints **EXPIRES**. The underlying stock date field is
 called `best_before_date` for both types, so its name alone does not determine
 which heading to use. Unknown date types print the neutral **DUE DATE** heading.
 Static `date_label` parameters no longer override the product's date meaning.
