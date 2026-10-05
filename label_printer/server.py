@@ -3552,10 +3552,12 @@ def _warm_native_px(entries: list[dict]) -> None:
 from grocy_labels import GrocyEnricher, register_grocy_routes
 
 
-def _grocy_printer():
-    if not _configured("brother"):
-        raise RuntimeError("Set brother_host in the add-on Configuration first")
-    return _printer_entry("brother")
+def _grocy_printer(name=None):
+    # Preserve the existing Brother default; installations without it use CUPS.
+    name = name or ("brother" if _configured("brother") else _default_queue())
+    if name not in _queues():
+        raise RuntimeError("Unknown or unavailable printer; check /printers")
+    return _printer_entry(name)
 
 
 def _grocy_enrich(payload):
