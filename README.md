@@ -120,6 +120,13 @@ Full documentation: [label_printer/DOCS.md](label_printer/DOCS.md).
 
 Both work fine without a printer; install this add-on to make them print.
 
+## AI assistance
+
+The Brother network-printing implementation, tests and documentation were
+developed with assistance from OpenAI Codex. Development was directed by the
+maintainer, and printing was verified on a Brother QL-1110NWB. The maintainer
+remains responsible for the published changes.
+
 ## License
 
 MIT
