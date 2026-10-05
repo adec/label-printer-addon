@@ -3,6 +3,9 @@ import io
 import socket
 import threading
 import time
+import re
+import urllib.request
+from html.parser import HTMLParser
 
 from PIL import Image, ImageOps
 from brother_ql.conversion import convert
@@ -56,11 +59,71 @@ def parse_status(frame):
                     or (kind == 0x0b and h > 0 and length in (h, alias_length))):
                 label = candidate
                 break
-    return {"connected": True, "media": label, "width_mm": width,
+    return {"connected": True, "source": "tcp", "media": label, "width_mm": width,
             "length_mm": None if kind == 0x0a else length,
             "media_type": {0: "none", 10: "continuous", 11: "die-cut"}.get(kind, "unknown"),
             "no_media": no_media, "error_bytes": [frame[8], frame[9]],
             "raw_status": frame.hex()}
+
+
+class _StatusHTML(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.fields = {}
+        self.tag = None
+        self.parts = []
+        self.key = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag in ("dt", "dd"):
+            self.tag, self.parts = tag, []
+
+    def handle_data(self, data):
+        if self.tag:
+            self.parts.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == self.tag:
+            text = " ".join("".join(self.parts).split())
+            if tag == "dt":
+                self.key = text.lower()
+            elif self.key:
+                self.fields[self.key] = text
+            self.tag = None
+
+
+def parse_web_status(page):
+    parser = _StatusHTML()
+    parser.feed(page)
+    fields = parser.fields
+    media_text = fields.get("media type", "")
+    match = re.search(r"(\d+)\s*mm(?:\s*[xX×]\s*(\d+)\s*mm)?", media_text)
+    if not match:
+        raise ValueError("Brother web status did not expose a recognized media size")
+    width = int(match[1])
+    length = int(match[2]) if match[2] else 0
+    # Reuse the driver catalogue matching used for raster status replies.
+    frame = bytearray(32)
+    frame[:3] = b"\x80\x20\x42"
+    frame[10], frame[11], frame[17] = width, 11 if length else 10, length
+    if fields.get("media status", "").lower() in ("empty", "no media"):
+        frame[8] = 1
+    result = parse_status(bytes(frame))
+    device = fields.get("device status", "").strip()
+    result.update(source="http", raw_status=None, error_bytes=[],
+                  device_status=device, media_description=media_text,
+                  printer_error=bool(device and device.upper() != "READY"))
+    return result
+
+
+def web_status(cfg):
+    host = cfg["host"]
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    url = f"http://{host}/general/status.html"
+    with urllib.request.urlopen(url, timeout=2) as response:
+        page = response.read(262144).decode("utf-8", errors="replace")
+    return parse_web_status(page)
 
 
 def status(cfg, refresh=False):
@@ -70,6 +133,15 @@ def status(cfg, refresh=False):
         cached = _STATUS_CACHE.get(key)
         if not refresh and cached and time.monotonic() - cached[0] < _STATUS_TTL:
             return dict(cached[1])
+        # Once a printer uses the web fallback, avoid waiting for absent TCP
+        # status replies on every refresh. Fall back to TCP if HTTP stops working.
+        if cached and cached[1].get("source") == "http":
+            try:
+                result = web_status(cfg)
+                _STATUS_CACHE[key] = (time.monotonic(), result)
+                return dict(result)
+            except (OSError, ValueError):
+                pass
         result = {"connected": False, "media": None}
         try:
             with socket.create_connection(key, timeout=2) as sock:
@@ -100,6 +172,10 @@ def status(cfg, refresh=False):
                     break
         except (OSError, ValueError) as exc:
             result["error"] = str(exc)
+            try:
+                result = web_status(cfg)
+            except (OSError, ValueError) as web_exc:
+                result["web_error"] = str(web_exc)
         _STATUS_CACHE[key] = (time.monotonic(), result)
         return dict(result)
 
@@ -113,8 +189,8 @@ def detected_label(options, refresh=False):
         raise MediaDetectionError("No usable roll detected; load labels and close the cover")
     if not detected.get("media"):
         raise MediaDetectionError("Could not detect a supported DK roll. Check /printers -> detection, or select brother_label manually")
-    if any(detected.get("error_bytes", [])):
-        raise MediaDetectionError("Printer reports an error; check /printers -> detection.error_bytes")
+    if any(detected.get("error_bytes", [])) or detected.get("printer_error"):
+        raise MediaDetectionError("Printer is not ready; check /printers -> detection for status details")
     return detected["media"]
 
 
@@ -215,7 +291,9 @@ def print_job(data, fmt, media, copies, options, rasterize_pdf, notes):
         # One stream at a time: concurrent requests must not interleave jobs.
         with _LOCK, socket.create_connection((cfg["host"], cfg["port"]), timeout=10) as sock:
             sock.sendall(raster.data)
-            _STATUS_CACHE.pop((cfg["host"], cfg["port"]), None)
+            key = (cfg["host"], cfg["port"])
+            if key in _STATUS_CACHE:
+                _STATUS_CACHE[key] = (0, _STATUS_CACHE[key][1])
     except OSError as exc:
         return {"ok": False, "error": "network_print_failed", "printer": NAME,
                 "detail": str(exc), "hint": "Check power, address and TCP port. A partial send may have printed labels; check before retrying."}

@@ -1,3 +1,10 @@
+## 0.15.1 — Brother web status fallback
+
+- Read the printer's HTTP status page when TCP raster status replies are unavailable.
+- Prefer the working HTTP source on subsequent refreshes; retain manual mode if both sources fail.
+- Verify detection of the target QL-1110NWB's 62 mm continuous roll.
+- Add tests for web media parsing, no-media/not-ready conditions and source fallback.
+
 ## 0.15.0 — Automatic Brother roll detection
 
 - Add opt-in brother_label: auto using the Brother TCP raster status request.
