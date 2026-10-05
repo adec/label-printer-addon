@@ -1,4 +1,25 @@
 configuration:
+  brother_host:
+    name: "Brother — IP address or hostname"
+    description: "QL-1110NWB on Wi-Fi/Ethernet. Leave empty to disable."
+  brother_port:
+    name: "Brother — TCP port"
+    description: "Raw raster TCP port, normally 9100."
+  brother_label:
+    name: "Brother — loaded DK roll"
+    description: "Must match the physical roll. Continuous rolls use width; die-cut rolls use width x length."
+  brother_length_mm:
+    name: "Brother — continuous label length (mm)"
+    description: "26–3000 mm, used only for continuous rolls."
+  brother_cut:
+    name: "Brother — automatic cutting"
+    description: "Cut labels after printing."
+  brother_size_mismatch:
+    name: "Brother — image size handling"
+    description: "Scale to fit, crop/pad at one dot per pixel, or reject mismatched dimensions."
+  brother_crop_align:
+    name: "Brother — alignment"
+    description: "Center, or align at the leading edge of the label."
   dymo_label:
     name: "DYMO — label loaded"
     description: >-
