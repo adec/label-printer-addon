@@ -275,7 +275,7 @@ def _wrap(draw, text, font, width):
 
 
 def _draw_fitted(draw, text, box, *, start, bold=False, fill=0,
-                 center=False, max_lines=2, truncate=False, minimum=8):
+                 center=False, max_lines=2, truncate=False, minimum=8, vertical_center=False):
     x, y, width, height = box
     for size in range(max(8, int(start)), max(8, int(minimum)) - 1, -1):
         font = _font(size, bold)
@@ -291,6 +291,10 @@ def _draw_fitted(draw, text, box, *, start, bold=False, fill=0,
         while last and draw.textlength(last + '…', font=font) > width:
             last = last[:-1]
         lines[-1] = last + '…'
+    if vertical_center:
+        bounds = draw.textbbox((0, 0), lines[-1], font=font)
+        used = (len(lines) - 1) * line_height + bounds[3] - bounds[1]
+        y += (height - used) / 2
     for index, line in enumerate(lines):
         offset = (width - draw.textlength(line, font=font)) / 2 if center else 0
         top = draw.textbbox((0, 0), line, font=font)[1]
@@ -324,20 +328,37 @@ def render_label(data, size):
     # Banner and optional category chip.
     banner_h = area(.085)
     draw.rounded_rectangle((0, 0, width - 1, banner_h), radius=max(6, round(16 * scale)), fill=0)
-    label = (data.location or 'GROCY').upper()
-    chip_w = min(round(inner * .35), round(210 * scale)) if data.category else 0
-    _draw_fitted(draw, label, (margin, banner_h * .23, inner - chip_w - margin,
-                             banner_h * .60), start=46 * scale, bold=True, fill=255,
-                 max_lines=1, truncate=True)
-    if data.category:
+    label = (data.category or 'GROCY').upper()
+    chip_w = min(round(inner * .4), round(238 * scale)) if data.location else 0
+    gap = max(8, round(width * .025)) if chip_w else 0
+    _draw_fitted(draw, label, (margin, 0, inner - chip_w - gap, banner_h),
+                 start=46 * scale, bold=True, fill=255, max_lines=1,
+                 truncate=True, vertical_center=True)
+    if data.location:
+        chip_text = data.location.upper()
+        padding_x = max(6, round(12 * scale))
+        padding_y = max(5, round(7 * scale))
+        for chip_size in range(max(8, round(42 * scale)), 7, -1):
+            chip_font = _font(chip_size, True)
+            bounds = draw.textbbox((0, 0), chip_text, font=chip_font)
+            if (draw.textlength(chip_text, font=chip_font) <= chip_w - 2 * padding_x
+                    and bounds[3] - bounds[1] + 2 * padding_y <= banner_h):
+                break
+        else:
+            while chip_text and draw.textlength(chip_text + '…', font=chip_font) > chip_w - 2 * padding_x:
+                chip_text = chip_text[:-1]
+            chip_text += '…'
+            bounds = draw.textbbox((0, 0), chip_text, font=chip_font)
+        text_h = bounds[3] - bounds[1]
+        chip_h = text_h + 2 * padding_y
         chip_x = width - margin - chip_w
-        draw.rounded_rectangle((chip_x, banner_h * .2, width - margin, banner_h * .8),
+        chip_y = (banner_h - chip_h) / 2
+        draw.rounded_rectangle((chip_x, chip_y, width - margin, chip_y + chip_h),
                                radius=max(4, round(10 * scale)), outline=255,
                                width=max(1, round(scale * 2)))
-        _draw_fitted(draw, data.category.upper(),
-                     (chip_x + 6, banner_h * .3, chip_w - 12, banner_h * .4),
-                     start=22 * scale, bold=True, fill=255, center=True,
-                     max_lines=1, truncate=True)
+        draw.text((chip_x + (chip_w - draw.textlength(chip_text, font=chip_font)) / 2,
+                   chip_y + padding_y - bounds[1]),
+                  chip_text, font=chip_font, fill=255)
     y = banner_h + area(.02)
     title_h = area(.115)
     title_used = _draw_fitted(draw, data.name, (margin, y, inner, title_h),

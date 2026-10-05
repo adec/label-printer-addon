@@ -1,3 +1,9 @@
+## 0.16.3 — Product group first
+
+- Show the product group prominently in the banner, centred vertically.
+- Put the location in a larger, centred chip fitted to its text height.
+- Fit long group and location names within the available banner width.
+
 ## 0.16.2 — More compact, readable Grocy labels
 
 - Place the product ID and QR code beside each other.
