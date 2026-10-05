@@ -41,27 +41,32 @@ IP address in DHCP, or use a stable hostname. Home Assistant must be able to
 reach the printer on TCP 9100, including across VLANs if applicable. Restart
 the add-on after configuration changes.
 
-### Automatic roll detection (v0.15.0)
+### Automatic roll detection (v0.15.1)
 
 Set `brother_label: "auto"`, save and restart the add-on. It sends Brother's
-`ESC i S` status request over TCP 9100 and reads the 32-byte reply. Supported
+`ESC i S` status request over TCP 9100 and reads the 32-byte reply. If no
+reply arrives, it reads the printer's unauthenticated HTTP status page on port
+80 (`/general/status.html`). Supported
 rectangular die-cut rolls are matched by width and length; continuous rolls
 are matched by width. For continuous tape, `brother_length_mm` still sets the
 cut length: the printer cannot infer the length you want or remaining tape.
 
 `GET /printers` exposes the detected `media`, `native_px` and a `detection`
 object with `width_mm`, `length_mm`, `media_type`, `no_media`, `error_bytes`
-and `raw_status`. Status replies are cached for five seconds for discovery;
+and `raw_status`. `source` identifies `tcp` or `http`; the HTTP fallback also
+reports `device_status` and `media_description` (raw bytes are unavailable). Status replies are cached for five seconds for discovery;
 auto-mode print jobs always query again before conversion. Queries and print
 streams are serialized. Swapping supported rolls needs no configuration change.
 
 Auto mode refuses printing if status is unavailable, the roll is unsupported,
 no media is present, or the printer reports an error. Check `detection` for
-details. If your printer/network does not return status replies, select the roll
+details. If neither TCP status nor the HTTP status page is available, select the roll
 manually to retain the previously working printing path. Detection sends no
 feed or cut commands. A status reply does not confirm physical completion of a
-print job. Status protocol tests pass; auto detection still needs verification
-on the physical printer.
+print job. The HTTP fallback has been verified against a QL-1110NWB reporting a
+62 mm continuous roll. Automatic die-cut detection still needs hardware
+verification. The web parser recognizes the English Media Type/Status fields;
+other display languages or authenticated-only pages may require manual mode.
 
 Select continuous rolls by width (`12`, `29`, `38`, `50`, `54`, `62`, `102`,
 `103`), or rectangular die-cut rolls by size (for example `62x100`, `102x51`,
