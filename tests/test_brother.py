@@ -85,6 +85,32 @@ class BrotherTests(unittest.TestCase):
             self.assertEqual(result['error'], 'network_print_failed')
             self.assertFalse(brother.connected(brother.config(self.opts)))
 
+    def test_selftest_without_saved_host_returns_configuration_error(self):
+        for options in ({}, {'brother_host': ''}, {'brother_label': '62'}):
+            with self.subTest(options=options), patch.object(server, '_addon_options', return_value=options), \
+                 patch.object(brother.socket, 'create_connection') as connect:
+                reply = server.app.test_client().post('/selftest?printer=brother')
+                self.assertEqual(reply.status_code, 503)
+                self.assertEqual(reply.get_json()['error'], 'brother_not_configured')
+                connect.assert_not_called()
+
+    def test_selftest_invalid_configuration_is_json(self):
+        for overrides in ({'brother_label': 'unknown'}, {'brother_port': 70000},
+                          {'brother_length_mm': 1, 'brother_label': '62'}):
+            with self.subTest(overrides=overrides), patch.object(server, '_addon_options', return_value=dict(self.opts, **overrides)):
+                reply = server.app.test_client().post('/selftest?printer=brother')
+                self.assertEqual(reply.status_code, 422)
+                self.assertEqual(reply.get_json()['error'], 'invalid_configuration')
+
+    def test_selftest_continuous_roll(self):
+        with patch.object(server, '_addon_options', return_value=dict(self.opts, brother_label='62')), \
+             patch.object(server, '_journal_add'), \
+             patch.object(brother.socket, 'create_connection') as connect:
+            reply = server.app.test_client().post('/selftest?printer=brother')
+            self.assertEqual(reply.status_code, 200)
+            self.assertTrue(reply.get_json()['submitted'])
+            connect.return_value.__enter__.return_value.sendall.assert_called_once()
+
     def test_api_discovery_default_and_print(self):
         with patch.object(server, '_addon_options', return_value=self.opts), \
              patch.object(server, '_run', return_value=type('Result', (), {'stdout': b'', 'stderr': b'', 'returncode': 0})()), \
