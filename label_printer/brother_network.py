@@ -34,6 +34,8 @@ def config(options):
 
 
 def size(label, options):
+    if label not in LABELS:
+        raise ValueError(f"Unsupported Brother label: {label!r}; set brother_label to the loaded DK roll")
     specs = LabelsManager()[label]
     w, h = specs.dots_printable
     if not h:
@@ -62,9 +64,14 @@ def connected(cfg):
 
 
 def print_job(data, fmt, media, copies, options, rasterize_pdf, notes):
-    cfg = config(options)
+    try:
+        cfg = config(options)
+    except (ValueError, TypeError) as exc:
+        return {"ok": False, "error": "invalid_configuration", "printer": NAME,
+                "detail": str(exc)}
     if not cfg:
-        return {"ok": False, "error": "printer_not_connected", "printer": NAME}
+        return {"ok": False, "error": "brother_not_configured", "printer": NAME,
+                "hint": "Set brother_host in the add-on Configuration, save and restart."}
     label = cfg["media"] if not media or media.lower() == "auto" else media
     if label != cfg["media"]:
         return {"ok": False, "error": "invalid_media", "printer": NAME,

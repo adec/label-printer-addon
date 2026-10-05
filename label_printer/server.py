@@ -2230,6 +2230,18 @@ def selftest():
     printer = (request.args.get("printer")
                or (request.get_json(silent=True) or {}).get("printer")
                or _default_queue())
+    if printer == "brother":
+        try:
+            cfg = brother_network.config(_addon_options())
+            if not cfg:
+                return jsonify({"ok": False, "error": "brother_not_configured",
+                                "printer": printer,
+                                "hint": "Set brother_host in the add-on Configuration, save and restart. Set brother_label to match the loaded roll."}), 503
+            brother_network.size(cfg["media"], _addon_options())
+        except (ValueError, TypeError, KeyError) as exc:
+            return jsonify({"ok": False, "error": "invalid_configuration",
+                            "printer": printer, "detail": str(exc),
+                            "hint": "Check brother_host, brother_port, brother_label and brother_length_mm in the add-on Configuration."}), 422
     if _configured(printer).get("kind") == "zebra":
         # Native ZPL, so the test also proves the raw passthrough works.
         zpl = (

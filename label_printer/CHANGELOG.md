@@ -1,3 +1,9 @@
+## 0.14.1 — Brother self-test configuration errors
+
+- Return an actionable JSON error when Brother self-test is requested before brother_host is saved, instead of crashing on an empty label name.
+- Validate label geometry and report malformed self-test/print configuration.
+- Cover missing options, empty host and invalid configuration in regression tests.
+
 ## 0.14.0 — Brother network printing
 
 - Add QL-1110NWB printing over Wi-Fi/Ethernet using Brother raster over TCP.
