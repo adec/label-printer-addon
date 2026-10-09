@@ -37,7 +37,13 @@ import tempfile
 import threading
 from datetime import datetime
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify as _flask_jsonify, request
+from ui_i18n import (message as _msg, language, localize, descriptor,
+                     render_page, join_messages)
+
+def jsonify(*args, **kwargs):
+    return _flask_jsonify(*(localize(a, language()) for a in args),
+                          **{k: localize(v, language()) for k, v in kwargs.items()})
 
 app = Flask(__name__)
 
@@ -192,7 +198,7 @@ API_VERSION = 1
 
 # What this server.py is; it live-reloads from /share independently of the
 # add-on version in config.yaml, so the dashboard shows both.
-SERVER_VERSION = "0.11.0"
+SERVER_VERSION = "0.15.2"
 
 # Lets the dashboard show the real add-on log (Supervisor owns it, we don't).
 # Present only when config.yaml grants hassio_api.
@@ -293,7 +299,7 @@ def _media_label(media: str) -> str:
     pts = _media_points(media)
     if pts:
         return f"{round(pts[0] * 25.4 / 72)} × {round(pts[1] * 25.4 / 72)} mm"
-    return media or "onbekend"
+    return media or _msg('onbekend')
 
 
 def _configured(name: str) -> dict:
@@ -770,17 +776,17 @@ _alr_last: dict[str, dict] = {}
 _alr_applied: dict[str, str] = {}
 
 _ALR_BAY = {
-    0: ("unknown", "bay-status onbekend"),
-    1: ("open", "klep open"),
-    2: ("absent", "geen rol geladen"),
-    3: ("misfed", "rol zit niet goed"),
-    4: ("unknown", "rol geladen, status onbekend"),
-    5: ("empty", "rol is op"),
-    6: ("critical", "rol bijna op"),
-    7: ("low", "rol raakt op"),
-    8: ("ok", "rol geladen"),
-    9: ("jam", "rol vastgelopen"),
-    10: ("counterfeit", "rol niet als origineel herkend"),
+    0: ("unknown", _msg('bay-status onbekend')),
+    1: ("open", _msg('klep open')),
+    2: ("absent", _msg('geen rol geladen')),
+    3: ("misfed", _msg('rol zit niet goed')),
+    4: ("unknown", _msg('rol geladen, status onbekend')),
+    5: ("empty", _msg('rol is op')),
+    6: ("critical", _msg('rol bijna op')),
+    7: ("low", _msg('rol raakt op')),
+    8: ("ok", _msg('rol geladen')),
+    9: ("jam", _msg('rol vastgelopen')),
+    10: ("counterfeit", _msg('rol niet als origineel herkend')),
 }
 
 # The NFC tag reports the roll's article number. DYMO sells the same label
@@ -1310,11 +1316,11 @@ def _revive_exhausted(queue: str, job_ids: list) -> list:
 _KIND_LABEL = {"dymo": "DYMO", "zebra": "Zebra", "brother": "Brother"}
 _ALERT_MEANING = (
     (("out-of-paper", "media-empty", "media-needed", "marker-supply-empty"),
-     "media_out", "Labels op in de {p}."),
-    (("media-jam",), "media_jam", "Er zit een label vast in de {p}."),
-    (("cover-open", "door-open"), "cover_open", "De klep van de {p} staat open."),
-    (("media-low",), "media_low", "De {p} heeft bijna geen labels meer."),
-    (("offline",), "offline", "De {p} is offline."),
+     "media_out", _msg('Labels op in de {p}.')),
+    (("media-jam",), "media_jam", _msg('Er zit een label vast in de {p}.')),
+    (("cover-open", "door-open"), "cover_open", _msg('De klep van de {p} staat open.')),
+    (("media-low",), "media_low", _msg('De {p} heeft bijna geen labels meer.')),
+    (("offline",), "offline", _msg('De {p} is offline.')),
 )
 
 
@@ -1326,9 +1332,9 @@ def _printer_label(name: str) -> str:
 def _waiting_phrase(pending: dict | None) -> str:
     n = (pending or {}).get("count") or 0
     if n == 1:
-        return " Er wacht 1 label."
+        return _msg(' Er wacht 1 label.')
     if n > 1:
-        return f" Er wachten {n} labels."
+        return _msg(' Er wachten {0} labels.', n)
     return ""
 
 
@@ -1336,9 +1342,8 @@ def _reload_hint(kind: str) -> str:
     # Measured on this hardware: a DYMO resumes on its own once the roll is
     # back; a Zebra only releases its buffered label after a FEED press.
     if kind == "zebra":
-        return (" Nieuwe rol erin, klep dicht en één keer op FEED drukken — "
-                "dan komt het wachtende label eruit.")
-    return " Nieuwe rol erin, dan print hij vanzelf verder."
+        return (_msg(' Nieuwe rol erin, klep dicht en één keer op FEED drukken — dan komt het wachtende label eruit.'))
+    return _msg(' Nieuwe rol erin, dan print hij vanzelf verder.')
 
 
 def _attention() -> list[dict]:
@@ -1351,7 +1356,7 @@ def _attention() -> list[dict]:
         alerts = _queue_alerts(name)
         if alerts:
             joined = "; ".join(alerts).lower()
-            reason, text = "printer_alert", "De {p} vraagt aandacht."
+            reason, text = "printer_alert", _msg('De {p} vraagt aandacht.')
             for words, key, template in _ALERT_MEANING:
                 if any(w in joined for w in words):
                     reason, text = key, template
@@ -1368,13 +1373,13 @@ def _attention() -> list[dict]:
         age = job.get("age", 0)
         if age >= STUCK_JOB_SECONDS:
             mins = max(1, round(age / 60))
-            duur = "1 minuut" if mins == 1 else f"{mins} minuten"
+            duur = _msg('1 minuut') if mins == 1 else _msg('{0} minuten', mins)
             items.append({
                 "printer": name, "kind": kind, "reason": "job_stuck",
-                "detail": f"oudste job wacht {age}s",
-                "message": (f"De {label} print al {duur} niet."
+                "detail": _msg('oudste job wacht {0}s', age),
+                "message": (_msg('De {0} print al {1} niet.', label, duur)
                             + _waiting_phrase(job)
-                            + " Labels op of vastgelopen?"),
+                            + _msg(' Labels op of vastgelopen?')),
             })
             continue
         # Only worth a human once retrying has been given up on: until then
@@ -1382,16 +1387,12 @@ def _attention() -> list[dict]:
         givenup = _revive_exhausted(name, job.get("dead_ids") or [])
         if givenup:
             n = len(givenup)
-            headline = (f"Een print op de {label} is mislukt en blijft in de "
-                        "wachtrij staan." if n == 1 else
-                        f"{n} prints op de {label} zijn mislukt en blijven in "
-                        "de wachtrij staan.")
+            headline = (_msg('Een print op de {0} is mislukt en blijft in de wachtrij staan.', label) if n == 1 else
+                        _msg('{0} prints op de {1} zijn mislukt en blijven in de wachtrij staan.', n, label))
             items.append({
                 "printer": name, "kind": kind, "reason": "job_failed",
-                "detail": f"gestopte job(s) {', '.join(str(i) for i in givenup)}"
-                          f", {REVIVE_MAX_TRIES}x opnieuw aangeboden",
-                "message": (headline + " Opnieuw aanbieden hielp niet — print "
-                            "opnieuw of gooi de wachtrij leeg."),
+                "detail": _msg('gestopte job(s) {0}, {1}x opnieuw aangeboden', ', '.join(str(i) for i in givenup), REVIVE_MAX_TRIES),
+                "message": (headline + _msg(' Opnieuw aanbieden hielp niet — print opnieuw of gooi de wachtrij leeg.')),
             })
     # The Zebra never surfaces through CUPS; ask the printer itself.
     for entry in CONFIGURED:
@@ -1406,17 +1407,16 @@ def _attention() -> list[dict]:
             continue
         buffered = hs.get("buffered") or 0
         if buffered == 1:
-            waiting = " Er staat 1 label in het geheugen van de printer."
+            waiting = _msg(' Er staat 1 label in het geheugen van de printer.')
         elif buffered > 1:
-            waiting = (f" Er staan {buffered} labels in het geheugen van de "
-                       "printer.")
+            waiting = (_msg(' Er staan {0} labels in het geheugen van de printer.', buffered))
         else:
             waiting = ""
         # paper_out is the unambiguous one; a pause on this model means the
         # same thing in practice (measured), but a human may also have hit
         # the button — so the wording covers both without crying wolf.
-        headline = (f"Labels op in de {label}." if hs.get("paper_out")
-                    else f"De {label} print niet — labels op of op pauze.")
+        headline = (_msg('Labels op in de {0}.', label) if hs.get("paper_out")
+                    else _msg('De {0} print niet — labels op of op pauze.', label))
         items.append({
             "printer": name, "kind": "zebra",
             "reason": "media_out" if hs.get("paper_out") else "paused",
@@ -1451,19 +1451,15 @@ def _attention() -> list[dict]:
         # With the config still on "auto" there is no size to name at all --
         # the driver fits the page and "Ik print op auto" would say nothing.
         if not fallback or fallback.lower() == "auto":
-            media = "de maat die de printer zelf kiest"
+            media = _msg('de maat die de printer zelf kiest')
         else:
             media = _media_label(fallback)
         if sku:
-            detail = f"SKU {sku} staat niet in de labeltabel"
-            message = (f"Onbekende rol in de {label} (artikelnummer {sku}). "
-                       f"Ik print op {media} — klopt dat niet, stel de rol "
-                       "dan in bij de add-on-configuratie.")
+            detail = _msg('SKU {0} staat niet in de labeltabel', sku)
+            message = (_msg('Onbekende rol in de {0} (artikelnummer {1}). Ik print op {2} — klopt dat niet, stel de rol dan in bij de add-on-configuratie.', label, sku, media))
         else:
-            detail = f"geen NFC-gegevens (bay-status {alr.get('bay')})"
-            message = (f"De {label} leest geen labelgegevens van deze rol. "
-                       f"Waarschijnlijk een compatibele rol zonder NFC-tag. "
-                       f"Ik print op {media}.")
+            detail = _msg('geen NFC-gegevens (bay-status {0})', alr.get('bay'))
+            message = (_msg('De {0} leest geen labelgegevens van deze rol. Waarschijnlijk een compatibele rol zonder NFC-tag. Ik print op {1}.', label, media))
         items.append({
             "printer": name, "kind": "dymo", "reason": "roll_unrecognised",
             "detail": detail, "message": message,
@@ -1644,18 +1640,18 @@ def _apply_size_policy(data: bytes, fmt: str, media: str, printer: str,
     if fmt == "pdf":
         pages = _rasterize_pdf(data, dpi)
         if pages is None:
-            note("Ghostscript kon de PDF niet rasteren")
+            note(_msg('Ghostscript kon de PDF niet rasteren'))
             return {"ok": False, "error": "pdf_raster_failed",
                     "printer": printer,
                     "hint": "Ghostscript could not read this PDF."}
-        note(f"PDF gerasterd op {dpi}dpi: {len(pages)} pagina('s)")
+        note(_msg("PDF gerasterd op {0}dpi: {1} pagina('s)", dpi, len(pages)))
         tol = PDF_PX_TOLERANCE
     else:
         try:
             img = Image.open(io.BytesIO(data))
             img.load()
         except Exception:  # noqa: BLE001
-            note("afbeelding niet te decoderen")
+            note(_msg('afbeelding niet te decoderen'))
             return {"ok": False, "error": "bad_image", "printer": printer,
                     "hint": "Could not decode the image."}
         pages, tol = [img], 0
@@ -1666,11 +1662,10 @@ def _apply_size_policy(data: bytes, fmt: str, media: str, printer: str,
         if img.size != (tw, th) and img.size[::-1] == (tw, th):
             img = img.rotate(90, expand=True)
             if not pageno:
-                note("landschap-ontwerp 90° gedraaid (past exact gedraaid)")
+                note(_msg('landschap-ontwerp 90° gedraaid (past exact gedraaid)'))
         w, h = img.size
         if mode == "reject" and (abs(w - tw) > tol or abs(h - th) > tol):
-            note(f"geweigerd: {w}×{h}px past niet op label {tw}×{th}px "
-                 "(size policy 'reject')")
+            note(_msg("geweigerd: {0}×{1}px past niet op label {2}×{3}px (size policy 'reject')", w, h, tw, th))
             return {"ok": False, "error": "size_mismatch", "printer": printer,
                     "media": media, "expected_px": [tw, th],
                     "got_px": [w, h], "dpi": dpi,
@@ -1680,12 +1675,11 @@ def _apply_size_policy(data: bytes, fmt: str, media: str, printer: str,
         if (w, h) != (tw, th):
             acts = []
             if w > tw or h > th:
-                acts.append("overhang eraf")
+                acts.append(_msg('overhang eraf'))
             if w < tw or h < th:
-                acts.append("wit aangevuld")
+                acts.append(_msg('wit aangevuld'))
             if not pageno:
-                note(f"{w}×{h}px 1:1 op label {tw}×{th}px gelegd "
-                     f"({align}: {', '.join(acts)}) — niet geschaald")
+                note(_msg('{0}×{1}px 1:1 op label {2}×{3}px gelegd ({4}: {5}) — niet geschaald', w, h, tw, th, align, join_messages(', ', acts)))
             if img.mode == "RGBA":
                 flat = Image.new("RGB", img.size, (255, 255, 255))
                 flat.paste(img, mask=img.split()[3])
@@ -1699,7 +1693,7 @@ def _apply_size_policy(data: bytes, fmt: str, media: str, printer: str,
             canvas.paste(img, pos)
             img = canvas
         elif not pageno:
-            note(f"maat exact {tw}×{th}px → 1:1 doorgezet")
+            note(_msg('maat exact {0}×{1}px → 1:1 doorgezet', tw, th))
         buf = io.BytesIO()
         img.save(buf, format="PNG", dpi=(dpi, dpi))
         out.append(buf.getvalue())
@@ -1946,7 +1940,7 @@ def _addon_log(lines: int = 200) -> dict:
     """Tail of this add-on's own log, via the Supervisor API."""
     if not SUPERVISOR_TOKEN:
         return {"ok": False,
-                "error": "Geen Supervisor-toegang (hassio_api staat uit)."}
+                "error": _msg('Geen Supervisor-toegang (hassio_api staat uit).')}
     import urllib.error
     import urllib.request
     headers = {"Authorization": f"Bearer {SUPERVISOR_TOKEN}"}
@@ -1963,7 +1957,7 @@ def _addon_log(lines: int = 200) -> dict:
             return {"ok": True, "text": "\n".join(tail), "lines": len(tail)}
         except (urllib.error.URLError, OSError, ValueError) as exc:
             last = str(exc)
-    return {"ok": False, "error": f"Log niet op te halen: {last}"}
+    return {"ok": False, "error": _msg('Log niet op te halen: {0}', last)}
 
 
 # --------------------------------------------------------------------------
@@ -1997,13 +1991,15 @@ def _print_bytes(data: bytes, media: str | None, copies: int, printer: str,
         "media": result.get("media") or media or "auto",
         "copies": result.get("copies", copies),
         "bytes": len(data),
-        "summary": "; ".join(notes) or "geen bewerkingen geregistreerd",
+        "summary": "; ".join(notes) or _msg('geen bewerkingen geregistreerd'),
+        "summary_i18n": [descriptor(n) for n in notes] or [descriptor(_msg("geen bewerkingen geregistreerd"))],
     }
     if not entry["ok"]:
         entry["error"] = result.get("error")
         detail = result.get("detail") or result.get("hint")
         if detail:
             entry["detail"] = str(detail)[:200]
+            entry["detail_i18n"] = descriptor(detail)
     _journal_add(entry)
     return result
 
@@ -2030,7 +2026,7 @@ def _do_print(data: bytes, media: str | None, copies: int, printer: str,
                                          _addon_options(), _rasterize_pdf, notes)
     if not _queue_exists(printer):
         known = _queues()
-        notes.append(f"queue '{printer}' bestaat niet of is offline")
+        notes.append(_msg("queue '{0}' bestaat niet of is offline", printer))
         return {"ok": False, "error": "printer_not_connected", "printer": printer,
                 "available": known,
                 "hint": f"Unknown or offline queue '{printer}'. "
@@ -2049,14 +2045,12 @@ def _do_print(data: bytes, media: str | None, copies: int, printer: str,
         # This ZD220 signals "can't print" by pausing, not by raising the
         # paper-out flag, so both count as a stop.
         if hs.get("paper_out") or hs.get("paused"):
-            notes.append("geweigerd: printer staat stil "
-                         f"({'paper out' if hs.get('paper_out') else 'pauze'}, ~HS)")
+            notes.append(_msg('geweigerd: printer staat stil ({0}, ~HS)',
+                              'paper out' if hs.get('paper_out') else _msg('pauze')))
             return {"ok": False, "error": "media_out", "printer": printer,
                     "detail": hs.get("raw", ""),
                     "buffered": hs.get("buffered", 0),
-                    "hint": "De Zebra print nu niet — labels op of hij staat "
-                            "op pauze. Nieuwe rol erin, klep dicht en één keer "
-                            "op FEED drukken; stuur de job daarna opnieuw."}
+                    "hint": _msg('De Zebra print nu niet — labels op of hij staat op pauze. Nieuwe rol erin, klep dicht en één keer op FEED drukken; stuur de job daarna opnieuw.')}
 
     if fmt in RAW_FORMATS:
         # Raw printer language goes to the device untouched — the job already
@@ -2073,10 +2067,10 @@ def _do_print(data: bytes, media: str | None, copies: int, printer: str,
             info += f", ^PW{pw.group(1).decode()}"
         if ll:
             info += f", ^LL{ll.group(1).decode()}"
-        notes.append(f"raw {fmt.upper()} 1:1 doorgezet, niets aangepast ({info})")
+        notes.append(_msg('raw {0} 1:1 doorgezet, niets aangepast ({1})', fmt.upper(), info))
         res = _run(["lpr", "-P", printer, "-#", str(copies), "-l"], data=data)
         if res.returncode != 0:
-            notes.append("lpr weigerde de job")
+            notes.append(_msg('lpr weigerde de job'))
             return {"ok": False, "error": "lpr_failed", "detail": _err(res),
                     "printer": printer, "format": fmt}
         return {"ok": True, "printed": True, "printer": printer, "format": fmt,
@@ -2107,27 +2101,23 @@ def _do_print(data: bytes, media: str | None, copies: int, printer: str,
         target = _policy_target_px(printer, eff) if eff else None
         src = _src_px(data, fmt)
         if not target:
-            notes.append("printer kiest zelf de rol (media 'auto') → "
-                         "driver past in (fit-to-page)")
+            notes.append(_msg("printer kiest zelf de rol (media 'auto') → driver past in (fit-to-page)"))
         else:
             tw, th = target
-            desc = (f"geladen label {_media_label(eff)}" if via_loaded
+            desc = (_msg('geladen label {0}', _media_label(eff)) if via_loaded
                     else f"label {_media_label(eff)}")
             if fmt == "pdf":
-                notes.append(f"PDF → past in {desc} = {tw}×{th}px "
-                             "(fit-to-page)")
+                notes.append(_msg('PDF → past in {0} = {1}×{2}px (fit-to-page)', desc, tw, th))
             elif src:
                 if src == [tw, th]:
-                    notes.append(f"maat exact {tw}×{th}px → 1:1 doorgezet "
-                                 f"({desc})")
+                    notes.append(_msg('maat exact {0}×{1}px → 1:1 doorgezet ({2})', tw, th, desc))
                 else:
                     s = min(tw / src[0], th / src[1])
                     pct = (s - 1) * 100
-                    woord = "vergroot" if pct > 0 else "verkleind"
-                    msg = (f"{src[0]}×{src[1]}px ≠ {desc} {tw}×{th}px → "
-                           f"{abs(pct):.1f}% {woord} (fit-to-page)")
+                    woord = _msg('vergroot') if pct > 0 else _msg('verkleind')
+                    msg = (_msg('{0}×{1}px ≠ {2} {3}×{4}px → {5:.1f}% {6} (fit-to-page)', src[0], src[1], desc, tw, th, abs(pct), woord))
                     if abs(tw / th - src[0] / src[1]) > 0.01:
-                        msg += ", verhouding wijkt af → witruimte aan één kant"
+                        msg += _msg(', verhouding wijkt af → witruimte aan één kant')
                     notes.append(msg)
 
     dead_mm = _dead_zone_mm(printer, media or _default_media_for(printer))
@@ -2135,8 +2125,7 @@ def _do_print(data: bytes, media: str | None, copies: int, printer: str,
         dpi = DPI_BY_KIND.get(_configured(printer).get("kind"), 300)
         pages = [_drop_leading(p, dead_mm, dpi) for p in pages]
         fmt = "png"
-        notes.append(f"DYMO dode zone: eerste {dead_mm:g}mm afgeknipt, "
-                     "onderaan wit aangevuld")
+        notes.append(_msg('DYMO dode zone: eerste {0:g}mm afgeknipt, onderaan wit aangevuld', dead_mm))
 
     paths = []
     try:
@@ -2781,6 +2770,8 @@ pre.api{margin:0;padding:13px;border-radius:11px;background:var(--wash);
         <p class="sub" id="sub">laden…</p>
       </div>
     </div>
+    <label for="language">Language / Taal</label>
+    <select id="language" aria-label="Language / Taal"><option value="en">English</option><option value="nl">Nederlands</option></select>
     <span class="live" id="live"><i class="dot"></i><span id="live-t">verbinden…</span></span>
   </header>
 
@@ -2846,8 +2837,35 @@ curl -X POST 'http://HOST:8000/selftest?printer=zebra'</pre>
 <div id="toast"></div>
 
 <script>
+const CATALOG = __CATALOG__;
+const LOCALE = document.documentElement.lang === 'nl' ? 'nl-NL' : 'en-GB';
+function tr(key) { return CATALOG[key] ?? key; }
+function dateText(value, options) {
+  const date = new Date(String(value).replace(' ', 'T'));
+  return Number.isNaN(date.getTime()) ? String(value || '') : date.toLocaleString(LOCALE, options);
+}
+const nativeFetch = window.fetch.bind(window);
+window.fetch = (url, options) => {
+  const u = new URL(url, document.baseURI);
+  if (u.origin === location.origin) u.searchParams.set('lang', document.documentElement.lang);
+  return nativeFetch(u, options);
+};
+const languageSelect = document.getElementById('language');
+languageSelect.value = document.documentElement.lang;
+languageSelect.addEventListener('change', () => {
+  try { localStorage.setItem('label-printer-language', languageSelect.value); } catch (_) {}
+  const u = new URL(location.href); u.searchParams.set('lang', languageSelect.value);
+  location.href = u;
+});
+let savedLanguage = null;
+try { savedLanguage = localStorage.getItem('label-printer-language'); } catch (_) {}
+if (!new URL(location.href).searchParams.has('lang') && ['en', 'nl'].includes(savedLanguage)
+    && savedLanguage !== document.documentElement.lang) {
+  const u = new URL(location.href); u.searchParams.set('lang', savedLanguage); location.replace(u);
+}
+
 const $ = (s) => document.querySelector(s);
-const nl = new Intl.NumberFormat('nl-NL');
+const nl = new Intl.NumberFormat(LOCALE);
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g,
   (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
@@ -2906,7 +2924,7 @@ function dymoArt(led) {
 }
 
 function zebraArt(led) {
-  return '<svg viewBox="0 0 260 176" role="img" aria-label="Zebra labelprinter">' +
+  return '<svg viewBox="0 0 260 176" role="img" aria-label="Zebra label printer">' +
     '<ellipse cx="136" cy="152" rx="94" ry="9" fill="var(--art-shadow)"/>' +
     '<path d="M48,68 L200,68 L228,40 L76,40 Z" fill="#3c3c38" class="edge"/>' +
     '<path d="M200,68 L228,40 L228,110 L200,138 Z" fill="#232321" class="edge"/>' +
@@ -2927,17 +2945,17 @@ let F = {status:'all', printer:'all'};
 
 function statusOf(p, attention) {
   const a = (attention || []).find((x) => x.printer === p.name);
-  if (!p.connected) return {k:'crit', t:'Niet verbonden', i:P.close};
+  if (!p.connected) return {k:'crit', t:tr("Niet verbonden"), i:P.close};
   if (a) {
-    const t = a.reason === 'media_out' ? 'Labels op'
-      : a.reason === 'media_jam' ? 'Vastgelopen'
-      : a.reason === 'cover_open' ? 'Klep open'
-      : a.reason === 'media_low' ? 'Bijna leeg'
-      : a.reason === 'paused' ? 'Op pauze'
-      : a.reason === 'roll_unrecognised' ? 'Onbekende rol' : 'Vraagt aandacht';
+    const t = a.reason === 'media_out' ? tr("Labels op")
+      : a.reason === 'media_jam' ? tr("Vastgelopen")
+      : a.reason === 'cover_open' ? tr("Klep open")
+      : a.reason === 'media_low' ? tr("Bijna leeg")
+      : a.reason === 'paused' ? tr("Op pauze")
+      : a.reason === 'roll_unrecognised' ? tr("Onbekende rol") : tr("Vraagt aandacht");
     return {k:'warn', t:t, i:P.alert};
   }
-  return {k:'good', t:'Klaar', i:P.check};
+  return {k:'good', t:tr("Klaar"), i:P.check};
 }
 
 /* Fixed slot order — a series keeps its colour when another printer drops off
@@ -2979,12 +2997,12 @@ function render() {
   $('#t-fail').textContent = nl.format(t.fail);
   const per = Object.entries(t.per_printer || {}).filter((e) => e[1] > 0)
     .map((e) => e[1] + '× ' + e[0]).join(' · ');
-  $('#t-today-sub').textContent = t.ok === 0 ? 'nog niks vandaag' : (per || 'labels');
+  $('#t-today-sub').textContent = t.ok === 0 ? tr("nog niks vandaag") : (per || 'labels');
   const week = (st.series || []).slice(-7);
   const wk = week.reduce((s, d) => s + d.ok, 0);
   $('#t-week').textContent = nl.format(wk);
   $('#t-avg').textContent = week.length
-    ? (wk / week.length).toFixed(1).replace('.', ',') : '–';
+    ? (wk / week.length).toLocaleString(LOCALE, {minimumFractionDigits:1, maximumFractionDigits:1}) : '–';
 
   /* printers */
   $('#printers').innerHTML = ps.map((p, i) => {
@@ -2997,42 +3015,42 @@ function render() {
       '<div class="art">' + art + '</div>' +
       '<div class="pbody">' +
         '<div class="ptop"><h3>' + esc(p.title || p.name) +
-          (p.default ? '<span class="badge">standaard</span>' : '') +
+          (p.default ? tr("<span class=\"badge\">standaard</span>") : '') +
           '<br><span class="qname">' + esc(p.name) + '</span></h3>' +
           '<span class="status ' + s.k + '">' + icon(s.i, 'ico-sm') + esc(s.t) + '</span></div>' +
         '<dl class="specs">' +
-          '<div><dt>Geladen label</dt><dd>' + esc(p.label || '—') + '</dd></div>' +
+          tr("<div><dt>Geladen label</dt><dd>") + esc(p.label || '—') + '</dd></div>' +
           '<div><dt>Canvas</dt><dd>' + (px ? px + ' px' : '—') + ' @ ' + p.dpi + ' dpi</dd></div>' +
-          '<div><dt>Accepteert</dt><dd>' + ((p.accepts || []).join(', ').toUpperCase() || '—') + '</dd></div>' +
-          '<div><dt>Vandaag</dt><dd>' + nl.format(today) + (today === 1 ? ' label' : ' labels') + '</dd></div>' +
+          tr("<div><dt>Accepteert</dt><dd>") + ((p.accepts || []).join(', ').toUpperCase() || '—') + '</dd></div>' +
+          tr("<div><dt>Vandaag</dt><dd>") + nl.format(today) + (today === 1 ? ' label' : ' labels') + '</dd></div>' +
         '</dl>' +
         '<div class="roll ' + (r.level || 'ok') + '">' +
-          '<div class="roll-h"><span><b>Rol</b> — ' + (r.tracked
-            ? (r.source === 'alr' ? 'nog ' : 'nog ±') +
-              nl.format(r.left || 0) + ' van ' + nl.format(r.capacity || 0)
-            : 'ingesteld op ' + nl.format(r.capacity || 0) + ' per rol') + '</span>' +
+          tr("<div class=\"roll-h\"><span><b>Rol</b> — ") + (r.tracked
+            ? (r.source === 'alr' ? tr("nog ") : tr("nog ±")) +
+              nl.format(r.left || 0) + tr(" van ") + nl.format(r.capacity || 0)
+            : tr("ingesteld op ") + nl.format(r.capacity || 0) + tr(" per rol")) + '</span>' +
             '<span class="roll-pct">' + (r.tracked ? r.pct + '%' : '') + '</span></div>' +
           '<div class="meter"><i style="width:' + Math.max(2, r.pct || 0) + '%"></i></div>' +
           /* An ALR roll counts itself, so the reset/capacity buttons would
              write to an estimate nobody reads any more — hide them rather
              than let them report success and change nothing on screen. */
           '<div class="roll-f"><span>' + (r.source === 'alr'
-            ? 'de printer telt zelf mee' + (r.stale ? ' — even niet bereikbaar' : '')
+            ? tr("de printer telt zelf mee") + (r.stale ? tr(" — even niet bereikbaar") : '')
             : r.tracked
-              ? nl.format(r.used || 0) + ' geprint' +
-                (r.since ? ' sinds ' + esc(r.since) : '')
-              : 'nog niet bijgehouden — schatting start bij de eerste print') + '</span>' +
+              ? nl.format(r.used || 0) + tr(" geprint") +
+                (r.since ? tr(" sinds ") + esc(dateText(r.since, {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})) : '')
+              : tr("nog niet bijgehouden — schatting start bij de eerste print")) + '</span>' +
             (r.source === 'alr' ? '' :
             '<span class="roll-actions">' +
-              '<button class="btn btn-sm" data-roll="reset" data-p="' + esc(p.name) + '">Nieuwe rol</button>' +
+              '<button class="btn btn-sm" data-roll="reset" data-p="' + esc(p.name) + tr("\">Nieuwe rol</button>") +
               '<button class="btn btn-sm" data-roll="capacity" data-p="' + esc(p.name) +
-                '" data-cap="' + (r.capacity || 0) + '">Aantal…</button>' +
+                '" data-cap="' + (r.capacity || 0) + tr("\">Aantal…</button>") +
             '</span>') + '</div>' +
         '</div>' +
         '<div><button class="btn btn-pri" data-test="' + esc(p.name) + '">' +
-          icon(P.test, 'ico-sm') + 'Testprint</button></div>' +
+          icon(P.test, 'ico-sm') + tr("Testprint</button></div>") +
       '</div></article>';
-  }).join('') || '<div class="card empty">Geen printers gevonden. Controleer USB of de Brother-netwerkconfiguratie.</div>';
+  }).join('') || tr("<div class=\"card empty\">Geen printers gevonden. Controleer USB of de Brother-netwerkconfiguratie.</div>");
 
   renderChart();
   renderFilters();
@@ -3060,16 +3078,16 @@ function renderChart() {
     '<span class="key"><i style="background:' + seriesColor(i) + '"></i>' + esc(k) + '</span>').join('') : '';
 
   $('#cbody').innerHTML = days.map((d) =>
-    '<tr><td class="t">' + esc(d.day) + '</td><td class="num">' + d.ok +
-    '</td><td class="num">' + d.fail + '</td><td class="num">' + (d.ok + d.fail) + '</td></tr>').join('');
-  $('#tv-sum').textContent = 'Tabelweergave (' + days.length + ' dagen)';
+    '<tr><td class="t">' + esc(dateText(d.day, {day:'numeric', month:'short'})) + '</td><td class="num">' + nl.format(d.ok) +
+    '</td><td class="num">' + nl.format(d.fail) + '</td><td class="num">' + nl.format(d.ok + d.fail) + '</td></tr>').join('');
+  $('#tv-sum').textContent = tr("Tabelweergave (") + days.length + tr(" dagen)");
 
   // Printed labels only, so a bar's height always equals its stacked segments.
   const totals = days.map((d) => d.ok);
   const peak = Math.max(0, ...totals);
   if (peak === 0) {
-    host.innerHTML = '<div class="empty">Nog niks geprint in de laatste ' +
-      days.length + ' dagen.</div>';
+    host.innerHTML = tr("<div class=\"empty\">Nog niks geprint in de laatste ") +
+      days.length + tr(" dagen.</div>");
     return;
   }
 
@@ -3114,7 +3132,7 @@ function renderChart() {
     }
     const isToday = i === days.length - 1;
     if (i % step === 0 || isToday) {
-      const lbl = isToday ? 'vandaag' : String(Number(d.day.slice(8, 10)));
+      const lbl = isToday ? tr("vandaag") : String(Number(d.day.slice(8, 10)));
       g += '<text class="' + (isToday ? 'today' : '') + '" x="' + (x + bw / 2) +
         '" y="' + (H - 8) + '" text-anchor="middle">' + lbl + '</text>';
     }
@@ -3139,8 +3157,8 @@ function renderChart() {
       }).join('');
       const dt = new Date(d.day + 'T00:00:00');
       tip.innerHTML = '<div class="th">' +
-        dt.toLocaleDateString('nl-NL', {weekday:'short', day:'numeric', month:'short'}) +
-        '</div>' + rows + (d.fail ? '<div class="tr"><span>waarvan mislukt</span><b>' +
+        dt.toLocaleDateString(LOCALE, {weekday:'short', day:'numeric', month:'short'}) +
+        '</div>' + rows + (d.fail ? tr("<div class=\"tr\"><span>waarvan mislukt</span><b>") +
         d.fail + '</b></div>' : '');
       tip.hidden = false;
       const bx = (PL + band * i + band / 2) * scale;
@@ -3163,10 +3181,10 @@ function barPath(x, yy, w, h, r) {
 /* ---- journal ----------------------------------------------------------- */
 function renderFilters() {
   const names = (S.printers || []).map((p) => p.name);
-  const chips = [['status', 'all', 'Alles'], ['status', 'ok', 'Gelukt'],
-                 ['status', 'fail', 'Mislukt']];
+  const chips = [['status', 'all', tr("Alles")], ['status', 'ok', tr("Gelukt")],
+                 ['status', 'fail', tr("Mislukt")]];
   if (names.length > 1) {
-    chips.push(['printer', 'all', 'Alle printers']);
+    chips.push(['printer', 'all', tr("Alle printers")]);
     names.forEach((n) => chips.push(['printer', n, n]));
   }
   $('#filters').innerHTML = chips.map(([g, v, l]) =>
@@ -3179,18 +3197,18 @@ function renderJournal() {
   const jobs = all.filter((j) =>
     (F.status === 'all' || (F.status === 'ok') === !!j.ok) &&
     (F.printer === 'all' || j.printer === F.printer));
-  $('#jnote').textContent = jobs.length + ' van ' + all.length +
-    ' bewaard (max ' + S.journal_max + ')';
+  $('#jnote').textContent = jobs.length + tr(" van ") + all.length +
+    tr(" bewaard (max ") + S.journal_max + ')';
   $('#jbody').innerHTML = jobs.slice(0, 40).map((j) =>
-    '<tr><td class="t">' + esc(String(j.time || '').slice(5)) + '</td>' +
+    '<tr><td class="t">' + esc(dateText(j.time, {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', second:'2-digit'})) + '</td>' +
     '<td class="mono">' + esc(j.printer || '?') + '</td>' +
     '<td class="mono">' + esc(String(j.format || '?').toUpperCase()) +
       (Number(j.copies) > 1 ? ' ×' + j.copies : '') + '</td>' +
     '<td><span class="chip ' + (j.ok ? 'good' : 'bad') + '">' +
-      icon(j.ok ? P.check : P.close, 'ico-sm') + (j.ok ? 'ok' : 'fout') + '</span></td>' +
-    '<td>' + esc(j.summary || '') +
+      icon(j.ok ? P.check : P.close, 'ico-sm') + (j.ok ? 'ok' : tr("fout")) + '</span></td>' +
+    '<td>' + (j.summary_i18n ? '' : '<span class="detail">' + tr('Oud historiebericht (oorspronkelijke taal)') + '</span>') + esc(j.summary || '') +
       (j.detail ? '<span class="detail">' + esc(j.detail) + '</span>' : '') + '</td></tr>').join('')
-    || '<tr><td colspan="5" class="empty">Geen printjobs die hierbij passen.</td></tr>';
+    || tr("<tr><td colspan=\"5\" class=\"empty\">Geen printjobs die hierbij passen.</td></tr>");
 }
 
 /* ---- log --------------------------------------------------------------- */
@@ -3203,11 +3221,11 @@ async function loadLog() {
     const d = await r.json();
     const el = $('#log');
     const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
-    el.textContent = d.ok ? (d.text || '(leeg)')
-      : (d.error || 'Log niet beschikbaar.');
+    el.textContent = d.ok ? (d.text || tr("(leeg)"))
+      : (d.error || tr("Log niet beschikbaar."));
     if (stick) el.scrollTop = el.scrollHeight;
   } catch (e) {
-    $('#log').textContent = 'Log niet op te halen: ' + e;
+    $('#log').textContent = tr("Log niet op te halen: ") + e;
   }
   LOGBUSY = false;
   $('#logbtn').disabled = false;
@@ -3236,10 +3254,10 @@ document.addEventListener('click', async (ev) => {
   const test = ev.target.closest('[data-test]');
   if (test) {
     test.disabled = true;
-    toast('Testlabel naar ' + test.dataset.test + ' gestuurd…');
+    toast(tr("Testlabel naar ") + test.dataset.test + tr(" gestuurd…"));
     const r = await post('selftest?printer=' + encodeURIComponent(test.dataset.test));
-    toast(r.data.ok ? 'Testlabel geprint op ' + test.dataset.test
-      : 'Testprint mislukt: ' + (r.data.summary || r.data.error || r.status));
+    toast(r.data.ok ? tr("Testlabel geprint op ") + test.dataset.test
+      : tr("Testprint mislukt: ") + (r.data.summary || r.data.error || r.status));
     test.disabled = false;
     load();
     return;
@@ -3249,15 +3267,15 @@ document.addEventListener('click', async (ev) => {
     const p = roll.dataset.p;
     if (roll.dataset.roll === 'reset') {
       const r = await post('api/roll', {printer:p, action:'reset'});
-      toast(r.data.ok ? 'Nieuwe rol geteld voor ' + p + ' — ±' +
-        r.data.roll.capacity + ' labels' : 'Mislukt: ' + (r.data.error || r.status));
+      toast(r.data.ok ? tr("Nieuwe rol geteld voor ") + p + ' — ±' +
+        r.data.roll.capacity + ' labels' : tr("Mislukt: ") + (r.data.error || r.status));
     } else {
       const cur = roll.dataset.cap;
-      const v = prompt('Hoeveel labels zitten er op een volle rol voor ' + p + '?', cur);
+      const v = prompt(tr("Hoeveel labels zitten er op een volle rol voor ") + p + '?', cur);
       if (!v) return;
       const r = await post('api/roll', {printer:p, action:'capacity', capacity:parseInt(v, 10)});
-      toast(r.data.ok ? 'Rolgrootte voor ' + p + ' staat op ' + r.data.roll.capacity
-        : 'Mislukt: ' + (r.data.error || r.status));
+      toast(r.data.ok ? tr("Rolgrootte voor ") + p + tr(" staat op ") + r.data.roll.capacity
+        : tr("Mislukt: ") + (r.data.error || r.status));
     }
     load();
     return;
@@ -3284,7 +3302,7 @@ async function load() {
     render();
   } catch (e) {
     $('#live').classList.add('off');
-    $('#live-t').textContent = 'geen verbinding';
+    $('#live-t').textContent = tr("geen verbinding");
   }
 }
 
@@ -3294,7 +3312,7 @@ $('#i-hist').innerHTML = icon(P.hist);
 $('#i-log').innerHTML = icon(P.log);
 $('#i-api').innerHTML = icon(P.api);
 $('#apihost').textContent = location.port === '8000'
-  ? location.host : 'poort 8000 op je HA-host';
+  ? location.host : tr("poort 8000 op je HA-host");
 
 load();
 loadLog();
@@ -3319,7 +3337,7 @@ def index():
     # fetch inside the tunnel.
     prefix = request.headers.get("X-Ingress-Path", "")
     base = (prefix.rstrip("/") + "/") if prefix else "/"
-    return _DASH.replace("__BASE__", base)
+    return render_page(_DASH.replace("__BASE__", base), language())
 
 
 def _device_models() -> dict[str, str]:
@@ -3382,7 +3400,7 @@ def api_roll():
     body = request.get_json(silent=True) or {}
     printer = body.get("printer") or _default_queue()
     if not _queue_exists(printer):
-        return jsonify({"ok": False, "error": f"onbekende printer {printer}"}), 404
+        return jsonify({"ok": False, "error": _msg('onbekende printer {0}', printer)}), 404
     try:
         cap = int(body["capacity"]) if body.get("capacity") is not None else None
     except (TypeError, ValueError):
@@ -3392,12 +3410,12 @@ def api_roll():
         _roll_reset(printer, cap)
     elif action == "capacity":
         if not cap:
-            return jsonify({"ok": False, "error": "capacity ontbreekt"}), 400
+            return jsonify({"ok": False, "error": _msg('capacity ontbreekt')}), 400
         entry = _ROLL.get(printer) or _roll_reset(printer, cap)
         entry["capacity"] = max(1, cap)
         _roll_save()
     else:
-        return jsonify({"ok": False, "error": f"onbekende actie {action}"}), 400
+        return jsonify({"ok": False, "error": _msg('onbekende actie {0}', action)}), 400
     return jsonify({"ok": True, "roll": _roll_state(printer)})
 
 
@@ -3414,7 +3432,7 @@ def api_log():
 def index_plain():
     import html as _html
 
-    st = _status()
+    st = localize(_status(), language())
     rows = "".join(
         f"<tr><td><code>{p['name']}</code>{' <b>· default</b>' if p['default'] else ''}</td>"
         f"<td>{p['model'] or p['kind']}</td><td>{p['label']}</td>"
@@ -3431,10 +3449,10 @@ def index_plain():
         f"<td>{_html.escape(str(j.get('summary', '')))}"
         f"{('<br><small>' + _html.escape(str(j.get('detail', ''))) + '</small>') if j.get('detail') else ''}"
         f"</td></tr>"
-        for j in reversed(_JOURNAL[-20:])
+        for j in reversed(localize(_JOURNAL[-20:], language()))
     ) or "<tr><td colspan='5'>Nog geen printjobs sinds de start.</td></tr>"
-    return (
-        "<html><head><title>Label Printer</title>"
+    return render_page((
+        "<html lang='nl'><head><title>Label Printer</title>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<style>body{font-family:system-ui,sans-serif;max-width:700px;margin:40px "
         "auto;padding:0 20px;line-height:1.5}code{background:#f4f4f5;padding:2px 6px;"
@@ -3464,7 +3482,7 @@ def index_plain():
         "curl -X POST 'http://HOST:8000/selftest?printer=zebra'</pre>"
         f"<h3>Status</h3><pre>{json.dumps(st, indent=2)}</pre>"
         "</body></html>"
-    )
+    ), language())
 
 
 # --------------------------------------------------------------------------

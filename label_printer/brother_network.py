@@ -1,5 +1,6 @@
 """Brother QL-1110NWB raster printing over TCP (no CUPS queue required)."""
 import io
+from ui_i18n import message as _msg
 import socket
 import threading
 import time
@@ -297,7 +298,7 @@ def print_job(data, fmt, media, copies, options, rasterize_pdf, notes):
     except OSError as exc:
         return {"ok": False, "error": "network_print_failed", "printer": NAME,
                 "detail": str(exc), "hint": "Check power, address and TCP port. A partial send may have printed labels; check before retrying."}
-    notes.append(f"Brother raster 300 dpi, {target[0]}×{target[1]} px, {mode}; sent over TCP")
+    notes.append(_msg('Brother raster 300 dpi, {0}×{1} px, {2}; sent over TCP', target[0], target[1], mode))
     # TCP delivery is not proof that a physical label came out.
     return {"ok": True, "printed": False, "submitted": True, "printer": NAME,
             "media": label, "copies": copies, "pages": len(prepared),

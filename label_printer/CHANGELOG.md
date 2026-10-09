@@ -1,3 +1,13 @@
+## 0.15.2
+
+- Add English and Dutch dashboard translations, browser-language detection,
+  English fallback and a remembered language selector.
+- Translate printer alerts, roll controls, print history, notifications and
+  the legacy dashboard. Use the selected locale for dates and numbers.
+- Preserve translation keys and parameters in new history entries so their
+  descriptions follow the selected language; older entries retain their text.
+- Translate Brother configuration options into Dutch and document auto detection.
+
 ## 0.15.1 — Brother web status fallback
 
 - Read the printer's HTTP status page when TCP raster status replies are unavailable.

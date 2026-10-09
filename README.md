@@ -100,6 +100,20 @@ The Brother dependency is pinned to upstream commit
 This driver includes a QL-1110NWB model definition; manual printing has been confirmed on the target QL-1110NWB. The container build also needs
 validation on Home Assistant; no Docker runtime was available in development.
 
+## Dashboard language
+
+The dashboard supports English and Dutch. It initially follows the browser's
+preferred language, with English as the fallback. Use the **Language / Taal**
+selector to override it; the choice is remembered in that browser. You can also
+use `?lang=en` or `?lang=nl` on the dashboard and JSON API requests.
+
+Home Assistant's configuration form uses its own language setting and the
+`translations/en.yaml` and `translations/nl.yaml` files. Dashboard strings live
+in `ui_locales/en.json` and `ui_locales/nl.json`; these are separate catalogs.
+New print-history descriptions follow the selected language. Entries recorded
+before this update retain their original text. Raw printer/CUPS diagnostics and
+add-on log output retain the language provided by their source.
+
 ## Install
 
 1. Click the badge above (or add

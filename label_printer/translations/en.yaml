@@ -7,10 +7,10 @@ configuration:
     description: "Raw raster TCP port, normally 9100."
   brother_label:
     name: "Brother — loaded DK roll"
-    description: "Must match the physical roll. Continuous rolls use width; die-cut rolls use width x length."
+    description: "Select auto to detect the loaded roll using TCP status or the English HTTP status page. For manual selection, use width for continuous rolls or width x length for die-cut labels."
   brother_length_mm:
     name: "Brother — continuous label length (mm)"
-    description: "26–3000 mm, used only for continuous rolls."
+    description: "26–3000 mm, used only for continuous rolls, including when automatic roll detection is enabled."
   brother_cut:
     name: "Brother — automatic cutting"
     description: "Cut labels after printing."

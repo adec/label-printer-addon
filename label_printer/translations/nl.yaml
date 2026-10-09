@@ -1,25 +1,25 @@
 configuration:
   brother_host:
-    name: "Brother — IP address or hostname"
-    description: "QL-1110NWB on Wi-Fi/Ethernet. Leave empty to disable."
+    name: "Brother — IP-adres of hostnaam"
+    description: "QL-1110NWB via wifi/ethernet. Laat leeg om uit te schakelen."
   brother_port:
-    name: "Brother — TCP port"
-    description: "Raw raster TCP port, normally 9100."
+    name: "Brother — TCP-poort"
+    description: "TCP-poort voor rastergegevens, normaal 9100."
   brother_label:
-    name: "Brother — loaded DK roll"
-    description: "Must match the physical roll. Continuous rolls use width; die-cut rolls use width x length."
+    name: "Brother — geladen DK-rol"
+    description: "Kies auto om de geladen rol te detecteren via TCP-status of de Engelse HTTP-statuspagina. Handmatig: breedte voor doorlopende rollen, breedte x lengte voor voorgestanste labels."
   brother_length_mm:
-    name: "Brother — continuous label length (mm)"
-    description: "26–3000 mm, used only for continuous rolls."
+    name: "Brother — lengte van doorlopend label (mm)"
+    description: "26–3000 mm, alleen voor doorlopende rollen, ook bij automatische roldetectie."
   brother_cut:
-    name: "Brother — automatic cutting"
-    description: "Cut labels after printing."
+    name: "Brother — automatisch snijden"
+    description: "Snijd labels na het printen."
   brother_size_mismatch:
-    name: "Brother — image size handling"
-    description: "Scale to fit, crop/pad at one dot per pixel, or reject mismatched dimensions."
+    name: "Brother — verwerking van afbeeldingsmaat"
+    description: "Passend schalen, bijsnijden/aanvullen met één printerdot per pixel, of afwijkende afmetingen weigeren."
   brother_crop_align:
-    name: "Brother — alignment"
-    description: "Center, or align at the leading edge of the label."
+    name: "Brother — uitlijning"
+    description: "Centreren of uitlijnen aan de voorrand van het label."
   dymo_label:
     name: "DYMO — geladen label"
     description: >-

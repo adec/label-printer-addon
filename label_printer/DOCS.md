@@ -362,3 +362,17 @@ otherwise go unmentioned.
 - **A label "printed" but never came out** — check `GET /attention` and `GET
   /journal`. A Zebra accepts ZPL while empty and holds it; the journal shows
   the job, `/attention` shows why nothing appeared.
+
+## Dashboard language
+
+The dashboard supports English and Dutch. It initially follows the browser's
+preferred language, with English as the fallback. Use the **Language / Taal**
+selector to override it; the choice is remembered in that browser. You can also
+use `?lang=en` or `?lang=nl` on the dashboard and JSON API requests.
+
+Home Assistant's configuration form uses its own language setting and the
+`translations/en.yaml` and `translations/nl.yaml` files. Dashboard strings live
+in `ui_locales/en.json` and `ui_locales/nl.json`; these are separate catalogs.
+New print-history descriptions follow the selected language. Entries recorded
+before this update retain their original text. Raw printer/CUPS diagnostics and
+add-on log output retain the language provided by their source.

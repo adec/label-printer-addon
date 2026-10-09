@@ -13,3 +13,7 @@ across writes, unsolicited notifications, cache refresh, roll swaps and errors. 
 source fallback, missing media and printer-not-ready handling.
 It does not send any data to a physical printer. A Home Assistant container build
 and physical PNG/PDF print test are still required for hardware validation.
+
+Translation tests also require Node.js. They execute the dashboard JavaScript
+in both languages and check language negotiation, ingress paths, API alerts,
+persisted history translation and safe catalog embedding.

@@ -61,6 +61,8 @@ ENV PATH="/opt/brother/bin:$PATH"
 COPY brother_network.py /brother_network.py
 COPY run.sh /run.sh
 COPY server.py /server.py
+COPY ui_i18n.py /ui_i18n.py
+COPY ui_locales /ui_locales
 RUN chmod a+x /run.sh
 
 CMD [ "/run.sh" ]
